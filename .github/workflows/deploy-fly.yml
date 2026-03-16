@@ -5,14 +5,44 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
 jobs:
   deploy:
     name: Deploy app
     runs-on: ubuntu-latest
     concurrency: deploy-group # optional: ensure only one action runs at a time
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - doppler-config: demo
+            app-name: page-turner
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download the environment variables for Doppler config ${{ matrix.doppler-config }}
+        uses: ./.github/actions/download-env
+        with:
+          doppler-token: ${{ secrets.DOPPLER_TOKEN }}
+          project: page-turner
+          config: ${{ matrix.doppler-config }}
+
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Update fly secrets for ${{ matrix.app-name }} app
+        shell: bash
+        run: |
+          LOG_LEVEL=INFO flyctl secrets set --stage --app ${{ matrix.app-name }} \
+            GIT_REV="${{ github.sha }}" \
+            ENVIRONMENT="$ENVIRONMENT" \
+            GETGATHER_URL="$GETGATHER_URL" \
+            GETGATHER_APP_KEY="$GETGATHER_APP_KEY" \
+            LOGFIRE_TOKEN="$LOGFIRE_TOKEN" \
+            TAILSCALE_AUTHKEY="$TAILSCALE_AUTHKEY" \
+            MAXMIND_ACCOUNT_ID="$MAXMIND_ACCOUNT_ID" \
+            MAXMIND_LICENSE_KEY="$MAXMIND_LICENSE_KEY"
+
+      - name: Deploy ${{ matrix.app-name }} app
+        run: flyctl deploy --remote-only --app ${{ matrix.app-name }}
