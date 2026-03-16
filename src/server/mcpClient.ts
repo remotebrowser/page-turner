@@ -10,6 +10,7 @@ import { settings } from './config.js';
 import { getLocation } from './locationService.js';
 
 const mcpClient: Record<string, Client | null> = {};
+const goodreadsUiResourceBySession: Record<string, string | null> = {};
 let initPromise: Promise<Client> | null = null;
 
 const mcpUrl = `${settings.GETGATHER_URL}/mcp-books/`;
@@ -24,7 +25,19 @@ async function initializeMcpClient(
   initPromise = (async () => {
     const client = new Client(
       { name: 'page-turner-server', version: '1.0.0' },
-      { capabilities: {} }
+      // Loosen type for capabilities to avoid SDK type drift issues.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      {
+        capabilities: {
+          tools: { list: true, call: true },
+          resources: { list: true, read: true },
+          extensions: {
+            'io.modelcontextprotocol/ui': {
+              mimeTypes: ['text/html;profile=mcp-app'],
+            },
+          },
+        },
+      } as any
     );
 
     const location = await getLocation(ipAddress);
@@ -112,5 +125,93 @@ export async function callToolWithReconnect(
     await resetAndReinitializeMcpClient(params.sessionId, params.ipAddress);
     const client = getMcpClient(params.sessionId);
     return await client.callTool(params, resultSchema, options);
+  }
+}
+
+type McpTool = {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+  _meta?: {
+    ui?: {
+      resourceUri?: string;
+    };
+    [key: string]: unknown;
+  };
+};
+
+export async function getGoodreadsUiResourceUri(
+  sessionId: string,
+  ipAddress: string
+): Promise<string | null> {
+  const cached = goodreadsUiResourceBySession[sessionId];
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  let resourceUri: string | null = null;
+
+  try {
+    let client: Client;
+    try {
+      client = getMcpClient(sessionId);
+    } catch {
+      client = await initializeMcpClient(sessionId, ipAddress);
+    }
+    const toolsResponse =
+      (await (client as unknown as { listTools?: () => Promise<{ tools: McpTool[] }> }).listTools?.()) ??
+      (await (client as unknown as { request: (payload: { method: string; params?: unknown }) => Promise<{ tools: McpTool[] }> }).request(
+        {
+          method: 'tools/list',
+          params: {},
+        }
+      ));
+
+    const tools = toolsResponse?.tools ?? [];
+    const goodreadsTool = tools.find(
+      (tool) => tool.name === 'goodreads_remote_get_book_list'
+    );
+
+    resourceUri = goodreadsTool?._meta?.ui?.resourceUri ?? null;
+  } catch (error) {
+    Logger.warn('Failed to get Goodreads UI resource URI', {
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  goodreadsUiResourceBySession[sessionId] = resourceUri;
+  return resourceUri;
+}
+
+export async function readUiResourceHtml(
+  sessionId: string,
+  ipAddress: string,
+  resourceUri: string
+): Promise<string | null> {
+  try {
+    let client: Client;
+    try {
+      client = getMcpClient(sessionId);
+    } catch {
+      client = await initializeMcpClient(sessionId, ipAddress);
+    }
+    const { contents = [] } = await client.readResource({ uri: resourceUri });
+    const entry =
+      contents.find(
+        (c) =>
+          c.uri === resourceUri ||
+          c.mimeType === 'text/html;profile=mcp-app' ||
+          c.mimeType === 'text/html' ||
+          c.mimeType === 'application/xhtml+xml'
+      ) ?? contents[0];
+
+    return entry && 'text' in entry ? entry.text : null;
+  } catch (error) {
+    Logger.warn('Failed to read UI resource', {
+      resourceUri,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
   }
 }

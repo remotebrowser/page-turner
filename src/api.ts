@@ -9,6 +9,8 @@ type ApiResponse<T> = {
 type GetBookListResponse = {
   url: string;
   signin_id: string;
+  ui_resource_uri?: string | null;
+  tool_result?: unknown;
 };
 
 type PollAuthResponse = {

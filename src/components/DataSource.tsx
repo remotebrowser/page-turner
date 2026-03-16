@@ -3,7 +3,6 @@ import type { BrandConfig } from '../modules/Config';
 import { transformData, type Book } from '../modules/DataTransformSchema';
 import { apiClient } from '../api';
 import * as Sentry from '@sentry/react';
-import FollowUpForm from './FollowUpForm';
 import Modal from './Modal';
 
 interface DataSourceProps {
@@ -19,11 +18,6 @@ interface DataSourceProps {
   signinUrl?: string;
 }
 
-type SigninData = {
-  url: string;
-  signin_id: string;
-};
-
 export function DataSource({
   onSuccessConnect,
   onConnectStart,
@@ -36,36 +30,17 @@ export function DataSource({
   onRetryConnection,
   signinUrl: signinUrlProp,
 }: DataSourceProps) {
-  const signinUrl = signinUrlProp?.replace('3001', '5174');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [signinData, setSigninData] = useState<SigninData>();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const hasRequestedBookList = useRef(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
-
-  useEffect(() => {
-    if (!email || !email.includes('@') || hasRequestedBookList.current) return;
-
-    const fetchBookList = async () => {
-      const response = await apiClient.getBookList();
-      // When user start typing email, call the dpage URL to trigger the initial process (e.g., launch the browser and open the Goodreads sign-in page)
-      // This results in a faster response since we don’t need to start the entire process from the beginning when user submit the form.
-      await fetch(response.url, { method: 'POST' });
-      setSigninData(response as SigninData);
-    };
-
-    fetchBookList();
-    hasRequestedBookList.current = true;
-  }, [email]);
+  const [signinUiUrl, setSigninUiUrl] = useState<string | undefined>();
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [initialToolResult, setInitialToolResult] = useState<unknown>();
 
   const startAuthentication = useCallback(
     async (signinId?: string) => {
       if (!signinId) {
         throw new Error('No Signin ID received');
       }
-
-      onConnectStart?.();
 
       try {
         let pollResult;
@@ -125,43 +100,38 @@ export function DataSource({
   );
 
   useEffect(() => {
-    if (!isSubmitting || !signinData || !email || !password) return;
+    if (!signinUiUrl || !initialToolResult) {
+      return;
+    }
 
-    const submitLogin = async () => {
-      const response = await fetch(signinData.url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ email, password }),
-      });
+    const iframe = iframeRef.current;
+    if (!iframe) {
+      return;
+    }
 
-      const data = await response.text();
-      const isFailedSignin = data.includes('<title>Goodreads Sign In</title>');
-
-      if (isFailedSignin) {
-        onRetryConnection?.(signinData.url);
+    const onLoad = () => {
+      try {
+        iframe.contentWindow?.postMessage(
+          {
+            jsonrpc: '2.0',
+            method: 'ui/notifications/tool-result',
+            params: initialToolResult,
+          },
+          '*'
+        );
+      } catch (error) {
+        console.error('Failed to post tool-result message to iframe', error);
       }
     };
 
-    setIsSubmitting(false);
-    submitLogin().catch(console.error);
-    startAuthentication(signinData.signin_id);
-  }, [
-    isSubmitting,
-    signinData,
-    email,
-    password,
-    onRetryConnection,
-    startAuthentication,
-  ]);
+    iframe.addEventListener('load', onLoad);
 
-  useEffect(() => {
-    if (signinUrl) {
-      setIsModalOpen(true);
-    }
-  }, [signinUrl]);
+    return () => {
+      iframe.removeEventListener('load', onLoad);
+    };
+  }, [signinUiUrl, initialToolResult]);
 
   const isFormDisabled = disabled || isSubmitting;
-  const canSubmit = email && password && !isFormDisabled;
 
   return (
     <>
@@ -203,7 +173,34 @@ export function DataSource({
           ) : (
             <button
               disabled={disabled}
-              onClick={() => setIsModalOpen(true)}
+              onClick={async () => {
+                if (isFormDisabled) {
+                  return;
+                }
+                setIsSubmitting(true);
+                try {
+                  const response = await apiClient.getBookList();
+
+                  setInitialToolResult(response.tool_result);
+
+                  const iframeUrl = response.ui_resource_uri
+                    ? `/api/mcp-apps/ui?resourceUri=${encodeURIComponent(
+                        response.ui_resource_uri
+                      )}`
+                    : response.url;
+                  setSigninUiUrl(iframeUrl);
+                  setIsModalOpen(true);
+                  startAuthentication(response.signin_id);
+                } catch (error) {
+                  console.error('Failed to start Goodreads signin UI:', error);
+                  onConnectionError?.(
+                    error instanceof Error
+                      ? error.message
+                      : 'Failed to start Goodreads signin UI'
+                  );
+                  setIsSubmitting(false);
+                }
+              }}
               className={`px-4 py-2 bg-black text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors ${
                 disabled || isConnected ? 'opacity-50 cursor-not-allowed' : ''
               }`}
@@ -229,55 +226,14 @@ export function DataSource({
           setIsModalOpen(false);
         }}
       >
-        {!!signinUrl && (
-          <FollowUpForm
-            signinUrl={signinUrl}
-            onFinishSignin={startAuthentication}
-          />
-        )}
-
-        {!signinUrl && (
-          <div className="bg-white rounded-xl transition-colors p-6">
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <input
-                  id="email"
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  disabled={isFormDisabled}
-                  placeholder="Email"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <input
-                  id="password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && canSubmit) {
-                      setIsSubmitting(true);
-                    }
-                  }}
-                  disabled={isFormDisabled}
-                  placeholder="Password"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
-                />
-              </div>
-
-              <button
-                disabled={!canSubmit}
-                onClick={() => setIsSubmitting(true)}
-                className={`w-full px-4 py-2 bg-black text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors ${
-                  !canSubmit ? 'opacity-50 cursor-not-allowed' : ''
-                }`}
-              >
-                {isSubmitting ? 'Connecting...' : 'Connect'}
-              </button>
-            </div>
+        {!!signinUiUrl && (
+          <div className="relative">
+            <iframe
+              ref={iframeRef}
+              src={signinUiUrl}
+              sandbox="allow-same-origin allow-scripts allow-forms"
+              className="w-full h-[380px] rounded-xl border border-gray-200"
+            />
           </div>
         )}
       </Modal>
