@@ -86,7 +86,7 @@ app.get('/health', (req, res) => {
 app.post('/api/get-book-list', async (req, res) => {
   try {
     const result = await callToolWithReconnect({
-      name: 'goodreads_get_book_list',
+      name: 'goodreads_remote_get_book_list',
       sessionId: req.sessionID,
       ipAddress: getClientIp(req),
     });
