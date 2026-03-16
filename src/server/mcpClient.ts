@@ -66,6 +66,7 @@ async function initializeMcpClient(
       requestInit: {
         headers: {
           Authorization: `Bearer ${settings.GETGATHER_APP_KEY}_${sessionId}`,
+          'x-incognito': '1',
           ...dynamicHeaders,
         },
       },
