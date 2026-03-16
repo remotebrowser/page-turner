@@ -1,26 +1,26 @@
-import './server/instrument.js';
-import express from 'express';
+import * as Sentry from '@sentry/node';
+import bodyParser from 'body-parser';
 import cors from 'cors';
+import dotenv from 'dotenv';
+import express from 'express';
+import session, { SessionData } from 'express-session';
+import { createProxyMiddleware, fixRequestBody } from 'http-proxy-middleware';
+import { createRequire } from 'module';
+import { customAlphabet } from 'nanoid';
+import { Socket } from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
-import { createProxyMiddleware, fixRequestBody } from 'http-proxy-middleware';
-import { Socket } from 'net';
-import session, { SessionData } from 'express-session';
+import { BrandConfig } from './modules/Config';
 import { settings } from './server/config.js';
+import { TOOL_NAMES } from './server/constants.js';
+import './server/instrument.js';
+import { getClientIp, getLocation } from './server/locationService.js';
 import {
   callToolWithReconnect,
   getGoodreadsUiResourceUri,
   readUiResourceHtml,
 } from './server/mcpClient.js';
-import bodyParser from 'body-parser';
-import { getClientIp, getLocation } from './server/locationService.js';
-import { BrandConfig } from './modules/Config';
-import { createRequire } from 'module';
-import * as Sentry from '@sentry/node';
 import { Logger } from './utils/logger.js';
-import { customAlphabet } from 'nanoid';
-import { TOOL_NAMES } from './server/constants.js';
 const genSessionId = () =>
   customAlphabet('23456789abcdefghijkmnpqrstuvwxyz', 8)();
 
@@ -51,6 +51,29 @@ function getAppHost(req: express.Request): string {
   return `${protocol}://${host}`;
 }
 
+function normalizeHeaderValue(
+  value: string | string[] | undefined
+): string | undefined {
+  if (Array.isArray(value)) return value.join(', ');
+  return value;
+}
+
+async function getMcpRequestHeaders(req: express.Request) {
+  const connection = (req.query['connection'] as string) || null;
+  const location = await getLocation(getClientIp(req));
+  return {
+    'x-forwarded-for': req.ip,
+    'user-agent': normalizeHeaderValue(req.headers['user-agent']),
+    'sec-ch-ua': normalizeHeaderValue(req.headers['sec-ch-ua']),
+    'sec-ch-ua-mobile': normalizeHeaderValue(req.headers['sec-ch-ua-mobile']),
+    'sec-ch-ua-platform': normalizeHeaderValue(
+      req.headers['sec-ch-ua-platform']
+    ),
+    'x-location': location ? JSON.stringify(location) : undefined,
+    'x-proxy-type': connection || undefined,
+  };
+}
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -78,7 +101,7 @@ app.use((req, res, next) => {
 app.get('/internal/sentry/config', (_, res) => {
   res.json({
     dsn: settings.SENTRY_DSN,
-    environment: settings.NODE_ENV,
+    environment: settings.ENVIRONMENT,
   });
 });
 
@@ -138,11 +161,13 @@ app.post('/api/get-book-list', async (req, res) => {
     const sessionId = req.sessionID;
     const ipAddress = getClientIp(req);
 
+    const headers = await getMcpRequestHeaders(req);
     const [result, uiResourceUri] = await Promise.all([
       callToolWithReconnect({
-        name: TOOL_NAMES.GOODREADS_GET_BOOK_LIST,
+        name: TOOL_NAMES.GOODREADS_REMOTE_GET_BOOK_LIST,
         sessionId,
         ipAddress,
+        headers,
       }),
       getGoodreadsUiResourceUri(sessionId, ipAddress),
     ]);
@@ -210,12 +235,14 @@ app.post('/api/poll-signin', async (req, res) => {
       });
     }
 
+    const headers = await getMcpRequestHeaders(req);
     const result = await callToolWithReconnect(
       {
         name: 'check_signin',
         arguments: { signin_id },
         sessionId: req.sessionID,
         ipAddress: getClientIp(req),
+        headers,
       },
       undefined,
       {
@@ -266,12 +293,14 @@ app.post('/api/finalize-signin', async (req, res) => {
       });
     }
 
+    const headers = await getMcpRequestHeaders(req);
     await callToolWithReconnect(
       {
         name: 'finalize_signin',
         arguments: { signin_id },
         sessionId: req.sessionID,
         ipAddress: getClientIp(req),
+        headers,
       },
       undefined,
       {
