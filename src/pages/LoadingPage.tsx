@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
+import type { Book } from '../modules/DataTransformSchema';
 import LoadingAnimation from '../components/LoadingAnimation';
 import brandLogo from '../assets/brand-logo.svg';
+import { GoodreadsConnectionModal } from '../components/GoodreadsConnectionModal';
 
 type LoadingPageProps = {
   initialStep?: number;
@@ -8,14 +10,22 @@ type LoadingPageProps = {
   autoComplete?: boolean;
   onComplete?: () => void;
   stepDurations?: number[];
+  onSuccessConnect: (data: Book[]) => void;
+  onConnectionError?: (errorDetails: string) => void;
+  onProgressStep?: (step: number) => void;
+  onAuthComplete?: () => void;
 };
 
 export function LoadingPage({
   initialStep = 1,
-  totalSteps = 4,
+  totalSteps = 5,
   autoComplete = true,
   onComplete,
   stepDurations = [2000, 3000, 2500, 1000], // Duration for each step in milliseconds
+  onSuccessConnect,
+  onConnectionError,
+  onProgressStep,
+  onAuthComplete,
 }: LoadingPageProps) {
   const [currentStep, setCurrentStep] = useState(initialStep);
   const [progress, setProgress] = useState((initialStep / totalSteps) * 100);
@@ -27,17 +37,14 @@ export function LoadingPage({
 
   const steps = [
     { number: 1, label: 'Connect' },
-    { number: 2, label: 'Extract' },
-    { number: 3, label: 'Load' },
-    { number: 4, label: 'Complete' },
+    { number: 2, label: 'Sign in' },
+    { number: 3, label: 'Extract' },
+    { number: 4, label: 'Load' },
+    { number: 5, label: 'Complete' },
   ];
 
   useEffect(() => {
-    let progressInterval: NodeJS.Timeout;
-    let stepTimeout: NodeJS.Timeout;
-
-    // Smooth progress animation
-    const animateProgress = () => {
+    const progressInterval = setInterval(() => {
       const targetProgress = (currentStep / totalSteps) * 100;
       setProgress((prev) => {
         const diff = targetProgress - prev;
@@ -46,9 +53,9 @@ export function LoadingPage({
         }
         return targetProgress;
       });
-    };
+    }, 50);
 
-    progressInterval = setInterval(animateProgress, 50);
+    let stepTimeout: NodeJS.Timeout | undefined;
 
     // Auto-advance to next step only if autoComplete is true AND we're not being externally controlled
     if (autoComplete && currentStep < totalSteps) {
@@ -80,10 +87,12 @@ export function LoadingPage({
       case 1:
         return 'Connecting to Goodreads...';
       case 2:
-        return 'Waiting for authentication...';
+        return 'Please sign in to Goodreads...';
       case 3:
-        return 'Loading book history...';
+        return 'Extracting your Goodreads data...';
       case 4:
+        return 'Loading book history...';
+      case 5:
         return 'Almost done...';
       default:
         return 'Loading...';
@@ -169,6 +178,15 @@ export function LoadingPage({
                   </div>
                 );
               })}
+            </div>
+
+            <div className={`mt-4 ${currentStep === 2 ? '' : 'hidden'}`}>
+              <GoodreadsConnectionModal
+                onSuccessConnect={onSuccessConnect}
+                onConnectionError={onConnectionError}
+                onProgressStep={onProgressStep}
+                onAuthComplete={onAuthComplete}
+              />
             </div>
           </div>
         </div>

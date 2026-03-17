@@ -1,5 +1,5 @@
 import { useReducer } from 'react';
-import type { PurchaseHistory } from '../modules/DataTransformSchema';
+import type { Book } from '../modules/DataTransformSchema';
 
 import { LoadingPage } from './LoadingPage';
 import { OnboardingPage } from './OnboardingPage';
@@ -17,7 +17,7 @@ type ConnectionAction =
   | { type: 'START_CONNECTION' }
   | { type: 'PROGRESS_STEP'; step: number }
   | { type: 'AUTH_COMPLETE' }
-  | { type: 'CONNECTION_SUCCESS'; data: PurchaseHistory[] }
+  | { type: 'CONNECTION_SUCCESS'; data: Book[] }
   | { type: 'CONNECTION_ERROR'; error: string }
   | { type: 'RETRY_CONNECTION' }
   | { type: 'RESET_TO_INITIAL' }
@@ -25,7 +25,7 @@ type ConnectionAction =
 
 type ConnectionStateData = {
   state: ConnectionState;
-  orders: PurchaseHistory[];
+  orders: Book[];
   currentLoadingStep: number;
   signinUrl?: string;
   error: {
@@ -57,10 +57,10 @@ const connectionReducer = (
     case 'AUTH_COMPLETE':
       return {
         ...state,
-        currentLoadingStep: 2,
+        currentLoadingStep: 3,
       };
 
-    case 'CONNECTION_SUCCESS':
+    case 'CONNECTION_SUCCESS': {
       const hasOrders = action.data.length > 0;
       return {
         ...state,
@@ -69,6 +69,7 @@ const connectionReducer = (
         currentLoadingStep: 4,
         error: null,
       };
+    }
 
     case 'CONNECTION_ERROR':
       return {
@@ -136,8 +137,8 @@ export function MainPage() {
     dispatch({ type: 'AUTH_COMPLETE' });
   };
 
-  const handleSuccessConnect = (data: PurchaseHistory[]) => {
-    // Progress to step 4 (Complete) before finishing
+  const handleSuccessConnect = (data: Book[]) => {
+    // Progress to step 4 (Load) before finishing
     dispatch({ type: 'PROGRESS_STEP', step: 4 });
 
     // Wait a moment to show completion, then finish
@@ -176,24 +177,24 @@ export function MainPage() {
 
     case 'CONNECTING':
       return (
-        <LoadingPage
-          autoComplete={false}
-          initialStep={connectionState.currentLoadingStep}
-          totalSteps={4}
-        />
+        <>
+          <LoadingPage
+            autoComplete={false}
+            initialStep={connectionState.currentLoadingStep}
+            totalSteps={5}
+            onSuccessConnect={handleSuccessConnect}
+            onConnectionError={handleConnectionError}
+            onProgressStep={progressToStep}
+            onAuthComplete={handleAuthComplete}
+          />
+        </>
       );
 
     case 'INITIAL':
       return (
         <OnboardingPage
-          onSuccessConnect={handleSuccessConnect}
           onConnectStart={handleConnectStart}
-          onConnectionError={handleConnectionError}
-          onProgressStep={progressToStep}
-          onAuthComplete={handleAuthComplete}
           isConnecting={false}
-          onRetryConnection={handleRetry}
-          signinUrl={connectionState.signinUrl}
         />
       );
 

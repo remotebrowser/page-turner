@@ -1,4 +1,7 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import {
+  Client,
+  ClientOptions,
+} from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import {
@@ -8,9 +11,21 @@ import {
 import { Logger } from '../utils/logger.js';
 import { settings } from './config.js';
 import { getLocation } from './locationService.js';
+import { TOOL_NAMES } from './constants.js';
 
 const mcpClient: Record<string, Client | null> = {};
-const goodreadsUiResourceBySession: Record<string, string | null> = {};
+
+type GoodreadsUiCacheEntry = {
+  uri: string | null;
+  expiresAt: number;
+};
+
+const GOODREADS_UI_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+const goodreadsUiResourceBySession: Record<
+  string,
+  GoodreadsUiCacheEntry | undefined
+> = {};
 let initPromise: Promise<Client> | null = null;
 
 const mcpUrl = `${settings.GETGATHER_URL}/mcp-books/`;
@@ -25,8 +40,6 @@ async function initializeMcpClient(
   initPromise = (async () => {
     const client = new Client(
       { name: 'page-turner-server', version: '1.0.0' },
-      // Loosen type for capabilities to avoid SDK type drift issues.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       {
         capabilities: {
           tools: { list: true, call: true },
@@ -37,7 +50,7 @@ async function initializeMcpClient(
             },
           },
         },
-      } as any
+      } as ClientOptions
     );
 
     const location = await getLocation(ipAddress);
@@ -54,6 +67,15 @@ async function initializeMcpClient(
     });
 
     await client.connect(transport);
+
+    // Warm up Goodreads UI resource URI cache once after MCP client init.
+    // Fire-and-forget so we don't block initialization.
+    void getGoodreadsUiResourceUri(sessionId, ipAddress).catch((error) => {
+      Logger.warn('Failed to warm Goodreads UI resource URI cache', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
     mcpClient[sessionId] = client;
     return client;
   })();
@@ -128,6 +150,30 @@ export async function callToolWithReconnect(
   }
 }
 
+export async function getGoodreadsUiResourceUri(
+  sessionId: string,
+  ipAddress: string
+): Promise<string | null> {
+  const entry = goodreadsUiResourceBySession[sessionId];
+
+  const now = Date.now();
+
+  if (entry && entry.expiresAt > now) {
+    // Refresh in the background to keep cache up to date.
+    void fetchGoodreadsUiResourceUri(sessionId, ipAddress).catch((error) => {
+      Logger.warn('Failed to refresh Goodreads UI resource URI cache', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    return entry.uri;
+  }
+
+  // No cache yet; fetch and return (also populates the cache).
+  return fetchGoodreadsUiResourceUri(sessionId, ipAddress);
+}
+
 type McpTool = {
   name: string;
   description?: string;
@@ -140,15 +186,10 @@ type McpTool = {
   };
 };
 
-export async function getGoodreadsUiResourceUri(
+export async function fetchGoodreadsUiResourceUri(
   sessionId: string,
   ipAddress: string
 ): Promise<string | null> {
-  const cached = goodreadsUiResourceBySession[sessionId];
-  if (cached !== undefined) {
-    return cached;
-  }
-
   let resourceUri: string | null = null;
 
   try {
@@ -158,18 +199,11 @@ export async function getGoodreadsUiResourceUri(
     } catch {
       client = await initializeMcpClient(sessionId, ipAddress);
     }
-    const toolsResponse =
-      (await (client as unknown as { listTools?: () => Promise<{ tools: McpTool[] }> }).listTools?.()) ??
-      (await (client as unknown as { request: (payload: { method: string; params?: unknown }) => Promise<{ tools: McpTool[] }> }).request(
-        {
-          method: 'tools/list',
-          params: {},
-        }
-      ));
+    const toolsResponse: { tools: McpTool[] } = await client.listTools();
 
     const tools = toolsResponse?.tools ?? [];
     const goodreadsTool = tools.find(
-      (tool) => tool.name === 'goodreads_remote_get_book_list'
+      (tool) => tool.name === TOOL_NAMES.GOODREADS_GET_BOOK_LIST
     );
 
     resourceUri = goodreadsTool?._meta?.ui?.resourceUri ?? null;
@@ -180,7 +214,10 @@ export async function getGoodreadsUiResourceUri(
     });
   }
 
-  goodreadsUiResourceBySession[sessionId] = resourceUri;
+  goodreadsUiResourceBySession[sessionId] = {
+    uri: resourceUri,
+    expiresAt: Date.now() + GOODREADS_UI_CACHE_TTL_MS,
+  };
   return resourceUri;
 }
 

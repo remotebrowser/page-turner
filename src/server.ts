@@ -20,6 +20,7 @@ import { createRequire } from 'module';
 import * as Sentry from '@sentry/node';
 import { Logger } from './utils/logger.js';
 import { customAlphabet } from 'nanoid';
+import { TOOL_NAMES } from './server/constants.js';
 const genSessionId = () =>
   customAlphabet('23456789abcdefghijkmnpqrstuvwxyz', 8)();
 
@@ -107,14 +108,27 @@ app.get('/api/mcp-apps/ui', async (req, res) => {
       return;
     }
 
-    // Fallback: treat ui:// URI as a path on the underlying GETGATHER_URL host.
-    const uiPath = resourceUri.replace(/^ui:\/\//, '');
-    const targetUrl = `${settings.GETGATHER_URL.replace(/\/+$/, '')}/${uiPath}`;
-    res.redirect(targetUrl);
+    // Fallback: use signin URL from request query if present
+    const signinUrl =
+      typeof req.query.signin_url === 'string'
+        ? req.query.signin_url
+        : undefined;
+    if (signinUrl) {
+      return res.redirect(signinUrl);
+    }
+
+    // No further fallback; just return error
+    res
+      .status(404)
+      .send('MCP Apps UI resource not found and no signin URL provided');
   } catch (error) {
-    Logger.error('MCP Apps UI proxy error:', error as Error, {
-      req: req.toString(),
-    });
+    Logger.error(
+      'MCP Apps UI proxy error:',
+      error instanceof Error ? error : undefined,
+      {
+        req: req.toString(),
+      }
+    );
     res.status(500).send('Failed to load MCP Apps UI resource');
   }
 });
@@ -126,7 +140,7 @@ app.post('/api/get-book-list', async (req, res) => {
 
     const [result, uiResourceUri] = await Promise.all([
       callToolWithReconnect({
-        name: 'goodreads_get_book_list',
+        name: TOOL_NAMES.GOODREADS_GET_BOOK_LIST,
         sessionId,
         ipAddress,
       }),

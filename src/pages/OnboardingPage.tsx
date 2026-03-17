@@ -1,32 +1,19 @@
 import { DataSource } from '../components/DataSource';
 import goodreads from '../config/goodreads.json';
 import type { BrandConfig } from '../modules/Config';
-import type { Book } from '../modules/DataTransformSchema';
 import pageTurnerLogo from '../assets/page-turner-logo.svg';
 
 const goodreadsConfig = goodreads as BrandConfig;
 const BRANDS: Array<BrandConfig> = [goodreadsConfig];
 
 type OnboardingPageProps = {
-  onSuccessConnect: (data: Book[]) => void;
   onConnectStart?: () => void;
-  onConnectionError?: (errorDetails: string) => void;
-  onProgressStep?: (step: number) => void;
-  onAuthComplete?: () => void;
   isConnecting?: boolean;
-  onRetryConnection?: (url?: string) => void;
-  signinUrl?: string;
 };
 
 export function OnboardingPage({
-  onSuccessConnect,
   onConnectStart,
-  onConnectionError,
-  onProgressStep,
-  onAuthComplete,
   isConnecting,
-  onRetryConnection,
-  signinUrl,
 }: OnboardingPageProps) {
   return (
     <div className="flex-1 flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
@@ -51,14 +38,8 @@ export function OnboardingPage({
           <DataSource
             key={BRANDS[0].brand_id}
             brandConfig={BRANDS[0]}
-            onSuccessConnect={(data) => onSuccessConnect(data)}
             onConnectStart={onConnectStart}
-            onConnectionError={onConnectionError}
-            onProgressStep={onProgressStep}
-            onAuthComplete={onAuthComplete}
             disabled={isConnecting}
-            onRetryConnection={onRetryConnection}
-            signinUrl={signinUrl}
           />
 
           <div className="text-center">
