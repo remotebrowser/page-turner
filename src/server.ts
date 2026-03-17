@@ -166,7 +166,20 @@ app.post('/api/get-book-list', async (req, res) => {
           url: proxyPath,
           signin_id: structuredContent.signin_id,
           ui_resource_uri: uiResourceUri ?? null,
-          tool_result: result,
+          tool_result: {
+            ...result,
+            content:
+              (result.content as Array<Record<string, string>>)?.map(
+                (item: Record<string, string>) => ({
+                  ...item,
+                  text: item.text.replace(settings.GETGATHER_URL, appHost),
+                })
+              ) ?? [],
+            structuredContent: {
+              ...structuredContent,
+              url: proxyPath,
+            },
+          },
         },
       });
     }
