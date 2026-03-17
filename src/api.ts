@@ -6,7 +6,7 @@ type ApiResponse<T> = {
   error?: string;
 };
 
-type GetBookListResponse = {
+export type GetBookListResponse = {
   url: string;
   signin_id: string;
   ui_resource_uri?: string | null;

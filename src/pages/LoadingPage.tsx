@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { Book } from '../modules/DataTransformSchema';
+import type { GetBookListResponse } from '../api';
 import LoadingAnimation from '../components/LoadingAnimation';
 import brandLogo from '../assets/brand-logo.svg';
 import { GoodreadsConnectionModal } from '../components/GoodreadsConnectionModal';
@@ -10,6 +11,7 @@ type LoadingPageProps = {
   autoComplete?: boolean;
   onComplete?: () => void;
   stepDurations?: number[];
+  bookListData?: GetBookListResponse;
   onSuccessConnect: (data: Book[]) => void;
   onConnectionError?: (errorDetails: string) => void;
   onProgressStep?: (step: number) => void;
@@ -22,6 +24,7 @@ export function LoadingPage({
   autoComplete = true,
   onComplete,
   stepDurations = [2000, 3000, 2500, 1000], // Duration for each step in milliseconds
+  bookListData,
   onSuccessConnect,
   onConnectionError,
   onProgressStep,
@@ -180,14 +183,17 @@ export function LoadingPage({
               })}
             </div>
 
-            <div className={`mt-4 ${currentStep === 2 ? '' : 'hidden'}`}>
-              <GoodreadsConnectionModal
-                onSuccessConnect={onSuccessConnect}
-                onConnectionError={onConnectionError}
-                onProgressStep={onProgressStep}
-                onAuthComplete={onAuthComplete}
-              />
-            </div>
+            {bookListData && (
+              <div className={`mt-4 ${currentStep === 2 ? '' : 'hidden'}`}>
+                <GoodreadsConnectionModal
+                  bookListData={bookListData}
+                  onSuccessConnect={onSuccessConnect}
+                  onConnectionError={onConnectionError}
+                  onProgressStep={onProgressStep}
+                  onAuthComplete={onAuthComplete}
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>

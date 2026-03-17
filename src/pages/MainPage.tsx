@@ -1,5 +1,6 @@
 import { useReducer } from 'react';
 import type { Book } from '../modules/DataTransformSchema';
+import { apiClient, type GetBookListResponse } from '../api';
 
 import { LoadingPage } from './LoadingPage';
 import { OnboardingPage } from './OnboardingPage';
@@ -15,6 +16,7 @@ type ConnectionState =
 
 type ConnectionAction =
   | { type: 'START_CONNECTION' }
+  | { type: 'BOOK_LIST_LOADED'; data: GetBookListResponse }
   | { type: 'PROGRESS_STEP'; step: number }
   | { type: 'AUTH_COMPLETE' }
   | { type: 'CONNECTION_SUCCESS'; data: Book[] }
@@ -28,6 +30,7 @@ type ConnectionStateData = {
   orders: Book[];
   currentLoadingStep: number;
   signinUrl?: string;
+  bookListData?: GetBookListResponse;
   error: {
     title?: string;
     message?: string;
@@ -46,6 +49,12 @@ const connectionReducer = (
         state: 'CONNECTING',
         currentLoadingStep: 1,
         error: null,
+      };
+
+    case 'BOOK_LIST_LOADED':
+      return {
+        ...state,
+        bookListData: action.data,
       };
 
     case 'PROGRESS_STEP':
@@ -125,6 +134,15 @@ export function MainPage() {
 
   const handleConnectStart = () => {
     dispatch({ type: 'START_CONNECTION' });
+    apiClient
+      .getBookList()
+      .then((data) => dispatch({ type: 'BOOK_LIST_LOADED', data }))
+      .catch((error) =>
+        dispatch({
+          type: 'CONNECTION_ERROR',
+          error: error instanceof Error ? error.message : 'Failed to connect',
+        })
+      );
   };
 
   // Function to progress loading steps manually
@@ -182,6 +200,7 @@ export function MainPage() {
             autoComplete={false}
             initialStep={connectionState.currentLoadingStep}
             totalSteps={5}
+            bookListData={connectionState.bookListData}
             onSuccessConnect={handleSuccessConnect}
             onConnectionError={handleConnectionError}
             onProgressStep={progressToStep}

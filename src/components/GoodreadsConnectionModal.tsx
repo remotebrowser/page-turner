@@ -1,136 +1,97 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { BrandConfig } from '../modules/Config';
+import { useEffect, useRef } from 'react';
 import { transformData, type Book } from '../modules/DataTransformSchema';
-import { apiClient } from '../api';
+import { apiClient, type GetBookListResponse } from '../api';
 import * as Sentry from '@sentry/react';
 import Modal from './Modal';
 import goodreads from '../config/goodreads.json';
+import type { BrandConfig } from '../modules/Config';
 
-const goodreadsConfig = goodreads as BrandConfig;
+const BRAND_CONFIG = goodreads as BrandConfig;
+const SENTRY_TAGS = {
+  component: 'GoodreadsConnectionModal',
+  brand_id: BRAND_CONFIG.brand_id,
+  brand_name: BRAND_CONFIG.brand_name,
+};
 
-let getBookListPromise: ReturnType<typeof apiClient.getBookList> | null = null;
-
-function clearGetBookListPromise() {
-  getBookListPromise = null;
+function buildIframeUrl(
+  uiResourceUri: string | null | undefined,
+  signinUrl?: string
+): string {
+  const base = uiResourceUri
+    ? `/api/mcp-apps/ui?resourceUri=${encodeURIComponent(uiResourceUri)}${
+        signinUrl ? `&signin_url=${encodeURIComponent(signinUrl)}` : ''
+      }`
+    : (signinUrl ?? '');
+  const separator = base.includes('?') ? '&' : '?';
+  return `${base}${separator}theme=light`;
 }
 
 type GoodreadsConnectionModalProps = {
+  bookListData: GetBookListResponse;
   onSuccessConnect: (data: Book[]) => void;
   onConnectionError?: (errorDetails: string) => void;
   onProgressStep?: (step: number) => void;
   onAuthComplete?: () => void;
 };
 
-export function GoodreadsConnectionModal({
-  onSuccessConnect,
-  onConnectionError,
-  onProgressStep,
-  onAuthComplete,
-}: GoodreadsConnectionModalProps) {
-  const brandConfig = goodreadsConfig;
-  const [signinUiUrl, setSigninUiUrl] = useState<string | undefined>();
+export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
+  const { bookListData } = props;
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const [initialToolResult, setInitialToolResult] = useState<unknown>();
+  const callbacksRef = useRef(props);
+  callbacksRef.current = props;
 
-  const onSuccessConnectRef = useRef(onSuccessConnect);
-  const onConnectionErrorRef = useRef(onConnectionError);
-  const onProgressStepRef = useRef(onProgressStep);
-  const onAuthCompleteRef = useRef(onAuthComplete);
-  onSuccessConnectRef.current = onSuccessConnect;
-  onConnectionErrorRef.current = onConnectionError;
-  onProgressStepRef.current = onProgressStep;
-  onAuthCompleteRef.current = onAuthComplete;
-
-  const startAuthentication = useCallback(
-    async (signinId: string) => {
-      try {
-        onProgressStepRef.current?.(2);
-        let pollResult;
-        while (true) {
-          try {
-            pollResult = await apiClient.pollSignin(signinId);
-            if (pollResult?.status === 'SUCCESS') break;
-          } catch (error) {
-            Sentry.captureException(error, {
-              tags: {
-                component: 'GoodreadsConnectionModal',
-                brand_id: brandConfig.brand_id,
-                brand_name: brandConfig.brand_name,
-              },
-            });
-          }
-        }
-
-        const transformedData = transformData(
-          pollResult,
-          brandConfig.dataTransform
-        );
-        onAuthCompleteRef.current?.();
-        clearGetBookListPromise();
-        onSuccessConnectRef.current(transformedData as unknown as Book[]);
-        apiClient.finalizeSignin(signinId);
-      } catch (error) {
-        Sentry.captureException(error, {
-          tags: {
-            component: 'GoodreadsConnectionModal',
-            brand_id: brandConfig.brand_id,
-            brand_name: brandConfig.brand_name,
-          },
-          extra: { brandConfig },
-        });
-        const errorMessage =
-          error instanceof Error ? error.message : 'Unknown connection error';
-        clearGetBookListPromise();
-        onConnectionErrorRef.current?.(errorMessage);
-      }
-    },
-    [brandConfig]
+  const signinUiUrl = buildIframeUrl(
+    bookListData.ui_resource_uri,
+    bookListData.url
   );
 
   useEffect(() => {
     let cancelled = false;
 
-    if (!getBookListPromise) {
-      getBookListPromise = apiClient.getBookList();
-    }
+    const onPollAuth = async () => {
+      try {
+        callbacksRef.current.onProgressStep?.(2);
+        let pollResult;
+        while (true) {
+          if (cancelled) return;
+          try {
+            pollResult = await apiClient.pollSignin(bookListData.signin_id);
+            if (pollResult?.status === 'SUCCESS') break;
+          } catch (error) {
+            Sentry.captureException(error, { tags: SENTRY_TAGS });
+          }
+        }
 
-    getBookListPromise
-      .then((response) => {
         if (cancelled) return;
-        setInitialToolResult(response.tool_result);
-        const baseUrl = response.ui_resource_uri
-          ? `/api/mcp-apps/ui?resourceUri=${encodeURIComponent(
-              response.ui_resource_uri
-            )}${response.url ? `&signin_url=${encodeURIComponent(response.url)}` : ''}`
-          : (response.url ?? '');
-        const separator = baseUrl.includes('?') ? '&' : '?';
-        const iframeUrl = `${baseUrl}${separator}theme=light`;
-        setSigninUiUrl(iframeUrl ?? undefined);
-        startAuthentication(response.signin_id);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        clearGetBookListPromise();
-        onConnectionErrorRef.current?.(
-          error instanceof Error
-            ? error.message
-            : 'Failed to start Goodreads signin UI'
+        const transformedData = transformData(
+          pollResult,
+          BRAND_CONFIG.dataTransform
         );
-      });
+        callbacksRef.current.onAuthComplete?.();
+        callbacksRef.current.onSuccessConnect(
+          transformedData as unknown as Book[]
+        );
+        apiClient.finalizeSignin(bookListData.signin_id);
+      } catch (error) {
+        if (cancelled) return;
+        Sentry.captureException(error, {
+          tags: SENTRY_TAGS,
+          extra: { brandConfig: BRAND_CONFIG },
+        });
+        callbacksRef.current.onConnectionError?.(
+          error instanceof Error ? error.message : 'Unknown connection error'
+        );
+      }
+    };
+
+    onPollAuth();
 
     return () => {
       cancelled = true;
-      const p = getBookListPromise;
-      setTimeout(() => {
-        if (getBookListPromise === p) clearGetBookListPromise();
-      }, 0);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount; callbacks read via refs
-  }, []);
+  }, [bookListData.signin_id]);
 
   useEffect(() => {
-    if (!signinUiUrl || !initialToolResult) return;
-
     const iframe = iframeRef.current;
     if (!iframe) return;
 
@@ -140,7 +101,7 @@ export function GoodreadsConnectionModal({
           {
             jsonrpc: '2.0',
             method: 'ui/notifications/tool-result',
-            params: initialToolResult,
+            params: bookListData.tool_result,
           },
           '*'
         );
@@ -151,26 +112,24 @@ export function GoodreadsConnectionModal({
 
     const onMessage = (event: MessageEvent) => {
       const message = event.data;
-      if (!message || message.jsonrpc !== '2.0') {
+      if (
+        !message ||
+        message.jsonrpc !== '2.0' ||
+        message.method !== 'ui/initialize'
+      )
         return;
-      }
 
-      if (message.method === 'ui/initialize') {
-        const response = {
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {
-            hostContext: {
-              theme: 'light',
-            },
+      try {
+        iframe.contentWindow?.postMessage(
+          {
+            jsonrpc: '2.0',
+            id: message.id,
+            result: { hostContext: { theme: 'light' } },
           },
-        };
-
-        try {
-          iframe.contentWindow?.postMessage(response, '*');
-        } catch (error) {
-          console.error('Failed to post ui/initialize response', error);
-        }
+          '*'
+        );
+      } catch (error) {
+        console.error('Failed to post ui/initialize response', error);
       }
     };
 
@@ -181,36 +140,30 @@ export function GoodreadsConnectionModal({
       iframe.removeEventListener('load', onLoad);
       window.removeEventListener('message', onMessage);
     };
-  }, [signinUiUrl, initialToolResult]);
+  }, [bookListData.tool_result]);
 
   return (
     <Modal
       title={
         <div className="flex items-center gap-3">
           <img
-            src={brandConfig.logo_url}
-            alt={`${brandConfig.brand_name} logo`}
+            src={BRAND_CONFIG.logo_url}
+            alt={`${BRAND_CONFIG.brand_name} logo`}
             className="w-8 h-8 object-contain"
           />
-          <h3 className="font-medium">{brandConfig.brand_name}</h3>
+          <h3 className="font-medium">{BRAND_CONFIG.brand_name}</h3>
         </div>
       }
       open={true}
     >
-      {signinUiUrl ? (
-        <div className="relative pt-5">
-          <iframe
-            ref={iframeRef}
-            src={signinUiUrl}
-            sandbox="allow-same-origin allow-scripts allow-forms"
-            className="w-full h-[380px] rounded-xl border border-gray-200"
-          />
-        </div>
-      ) : (
-        <div className="w-full h-[380px] flex items-center justify-center rounded-xl border border-gray-200 bg-gray-50">
-          <p className="text-gray-500">Loading sign-in...</p>
-        </div>
-      )}
+      <div className="relative pt-5">
+        <iframe
+          ref={iframeRef}
+          src={signinUiUrl}
+          sandbox="allow-same-origin allow-scripts allow-forms"
+          className="w-full h-[380px] rounded-xl border border-gray-200"
+        />
+      </div>
     </Modal>
   );
 }
