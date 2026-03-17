@@ -18,31 +18,19 @@ jobs:
         include:
           - doppler-config: demo
             app-name: page-turner
+            fly-toml: fly.toml
+          - doppler-config: lambda
+            app-name: page-turner-lambda
+            fly-toml: fly.lambda.toml
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download the environment variables for Doppler config ${{ matrix.doppler-config }}
-        uses: ./.github/actions/download-env
+      - name: Deploy the app to Fly
+        uses: ./.github/actions/deploy-fly
         with:
           doppler-token: ${{ secrets.DOPPLER_TOKEN }}
-          project: page-turner
-          config: ${{ matrix.doppler-config }}
-
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-
-      - name: Update fly secrets for ${{ matrix.app-name }} app
-        shell: bash
-        run: |
-          LOG_LEVEL=INFO flyctl secrets set --stage --app ${{ matrix.app-name }} \
-            GIT_REV="${{ github.sha }}" \
-            ENVIRONMENT="$ENVIRONMENT" \
-            GETGATHER_URL="$GETGATHER_URL" \
-            GETGATHER_APP_KEY="$GETGATHER_APP_KEY" \
-            LOGFIRE_TOKEN="$LOGFIRE_TOKEN" \
-            TAILSCALE_AUTHKEY="$TAILSCALE_AUTHKEY" \
-            MAXMIND_ACCOUNT_ID="$MAXMIND_ACCOUNT_ID" \
-            MAXMIND_LICENSE_KEY="$MAXMIND_LICENSE_KEY"
-
-      - name: Deploy ${{ matrix.app-name }} app
-        run: flyctl deploy --remote-only --app ${{ matrix.app-name }}
+          doppler-project: page-turner
+          doppler-config: ${{ matrix.doppler-config }}
+          app-name: ${{ matrix.app-name }}
+          fly-toml: ${{ matrix.fly-toml }}
