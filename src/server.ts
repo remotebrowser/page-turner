@@ -62,7 +62,8 @@ async function getMcpRequestHeaders(req: express.Request) {
   const connection = (req.query['connection'] as string) || null;
   const location = await getLocation(getClientIp(req));
   return {
-    'x-forwarded-for': req.ip,
+    'x-origin-ip': getClientIp(req),
+    'x-forwarded-for': getClientIp(req),
     'user-agent': normalizeHeaderValue(req.headers['user-agent']),
     'sec-ch-ua': normalizeHeaderValue(req.headers['sec-ch-ua']),
     'sec-ch-ua-mobile': normalizeHeaderValue(req.headers['sec-ch-ua-mobile']),

@@ -232,7 +232,7 @@ export async function fetchGoodreadsUiResourceUri(
 
     const tools = toolsResponse?.tools ?? [];
     const goodreadsTool = tools.find(
-      (tool) => tool.name === TOOL_NAMES.GOODREADS_GET_BOOK_LIST
+      (tool) => tool.name === TOOL_NAMES.GOODREADS_REMOTE_GET_BOOK_LIST
     );
 
     resourceUri = goodreadsTool?._meta?.ui?.resourceUri ?? null;
@@ -272,7 +272,7 @@ export async function readUiResourceHtml(
           c.mimeType === 'application/xhtml+xml'
       ) ?? contents[0];
 
-    return entry && 'text' in entry ? entry.text : null;
+    return entry && 'text' in entry ? (entry.text as string | null) : null;
   } catch (error) {
     Logger.warn('Failed to read UI resource', {
       resourceUri,
