@@ -60,7 +60,6 @@ function normalizeHeaderValue(
 
 async function getMcpRequestHeaders(req: express.Request) {
   const connection = (req.query['connection'] as string) || null;
-  const location = await getLocation(getClientIp(req));
   return {
     'x-origin-ip': getClientIp(req),
     'x-forwarded-for': getClientIp(req),
@@ -70,7 +69,6 @@ async function getMcpRequestHeaders(req: express.Request) {
     'sec-ch-ua-platform': normalizeHeaderValue(
       req.headers['sec-ch-ua-platform']
     ),
-    'x-location': location ? JSON.stringify(location) : undefined,
     'x-proxy-type': connection || undefined,
   };
 }
