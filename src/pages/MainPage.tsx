@@ -1,5 +1,6 @@
 import { useReducer } from 'react';
-import type { PurchaseHistory } from '../modules/DataTransformSchema';
+import type { Book } from '../modules/DataTransformSchema';
+import { apiClient, type GetBookListResponse } from '../api';
 
 import { LoadingPage } from './LoadingPage';
 import { OnboardingPage } from './OnboardingPage';
@@ -15,9 +16,10 @@ type ConnectionState =
 
 type ConnectionAction =
   | { type: 'START_CONNECTION' }
+  | { type: 'BOOK_LIST_LOADED'; data: GetBookListResponse }
   | { type: 'PROGRESS_STEP'; step: number }
   | { type: 'AUTH_COMPLETE' }
-  | { type: 'CONNECTION_SUCCESS'; data: PurchaseHistory[] }
+  | { type: 'CONNECTION_SUCCESS'; data: Book[] }
   | { type: 'CONNECTION_ERROR'; error: string }
   | { type: 'RETRY_CONNECTION' }
   | { type: 'RESET_TO_INITIAL' }
@@ -25,9 +27,10 @@ type ConnectionAction =
 
 type ConnectionStateData = {
   state: ConnectionState;
-  orders: PurchaseHistory[];
+  orders: Book[];
   currentLoadingStep: number;
   signinUrl?: string;
+  bookListData?: GetBookListResponse;
   error: {
     title?: string;
     message?: string;
@@ -48,6 +51,12 @@ const connectionReducer = (
         error: null,
       };
 
+    case 'BOOK_LIST_LOADED':
+      return {
+        ...state,
+        bookListData: action.data,
+      };
+
     case 'PROGRESS_STEP':
       return {
         ...state,
@@ -57,10 +66,10 @@ const connectionReducer = (
     case 'AUTH_COMPLETE':
       return {
         ...state,
-        currentLoadingStep: 2,
+        currentLoadingStep: 3,
       };
 
-    case 'CONNECTION_SUCCESS':
+    case 'CONNECTION_SUCCESS': {
       const hasOrders = action.data.length > 0;
       return {
         ...state,
@@ -69,6 +78,7 @@ const connectionReducer = (
         currentLoadingStep: 4,
         error: null,
       };
+    }
 
     case 'CONNECTION_ERROR':
       return {
@@ -124,6 +134,15 @@ export function MainPage() {
 
   const handleConnectStart = () => {
     dispatch({ type: 'START_CONNECTION' });
+    apiClient
+      .getBookList()
+      .then((data) => dispatch({ type: 'BOOK_LIST_LOADED', data }))
+      .catch((error) =>
+        dispatch({
+          type: 'CONNECTION_ERROR',
+          error: error instanceof Error ? error.message : 'Failed to connect',
+        })
+      );
   };
 
   // Function to progress loading steps manually
@@ -136,8 +155,8 @@ export function MainPage() {
     dispatch({ type: 'AUTH_COMPLETE' });
   };
 
-  const handleSuccessConnect = (data: PurchaseHistory[]) => {
-    // Progress to step 4 (Complete) before finishing
+  const handleSuccessConnect = (data: Book[]) => {
+    // Progress to step 4 (Load) before finishing
     dispatch({ type: 'PROGRESS_STEP', step: 4 });
 
     // Wait a moment to show completion, then finish
@@ -176,24 +195,25 @@ export function MainPage() {
 
     case 'CONNECTING':
       return (
-        <LoadingPage
-          autoComplete={false}
-          initialStep={connectionState.currentLoadingStep}
-          totalSteps={4}
-        />
+        <>
+          <LoadingPage
+            autoComplete={false}
+            initialStep={connectionState.currentLoadingStep}
+            totalSteps={5}
+            bookListData={connectionState.bookListData}
+            onSuccessConnect={handleSuccessConnect}
+            onConnectionError={handleConnectionError}
+            onProgressStep={progressToStep}
+            onAuthComplete={handleAuthComplete}
+          />
+        </>
       );
 
     case 'INITIAL':
       return (
         <OnboardingPage
-          onSuccessConnect={handleSuccessConnect}
           onConnectStart={handleConnectStart}
-          onConnectionError={handleConnectionError}
-          onProgressStep={progressToStep}
-          onAuthComplete={handleAuthComplete}
           isConnecting={false}
-          onRetryConnection={handleRetry}
-          signinUrl={connectionState.signinUrl}
         />
       );
 

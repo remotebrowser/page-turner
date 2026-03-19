@@ -8,7 +8,11 @@ import { createProxyMiddleware, fixRequestBody } from 'http-proxy-middleware';
 import { Socket } from 'net';
 import session, { SessionData } from 'express-session';
 import { settings } from './server/config.js';
-import { callToolWithReconnect } from './server/mcpClient.js';
+import {
+  callToolWithReconnect,
+  getGoodreadsUiResourceUri,
+  readUiResourceHtml,
+} from './server/mcpClient.js';
 import bodyParser from 'body-parser';
 import { getClientIp, getLocation } from './server/locationService.js';
 import { BrandConfig } from './modules/Config';
@@ -16,6 +20,7 @@ import { createRequire } from 'module';
 import * as Sentry from '@sentry/node';
 import { Logger } from './utils/logger.js';
 import { customAlphabet } from 'nanoid';
+import { TOOL_NAMES } from './server/constants.js';
 const genSessionId = () =>
   customAlphabet('23456789abcdefghijkmnpqrstuvwxyz', 8)();
 
@@ -83,13 +88,64 @@ app.get('/health', (req, res) => {
 });
 
 // API Routes
+app.get('/api/mcp-apps/ui', async (req, res) => {
+  try {
+    const resourceUri = req.query.resourceUri;
+
+    if (typeof resourceUri !== 'string' || !resourceUri) {
+      res.status(400).send('resourceUri query parameter is required');
+      return;
+    }
+
+    const sessionId = req.sessionID;
+    const ipAddress = getClientIp(req);
+
+    const html = await readUiResourceHtml(sessionId, ipAddress, resourceUri);
+
+    if (html) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+      return;
+    }
+
+    // Fallback: use signin URL from request query if present
+    const signinUrl =
+      typeof req.query.signin_url === 'string'
+        ? req.query.signin_url
+        : undefined;
+    if (signinUrl) {
+      return res.redirect(signinUrl);
+    }
+
+    // No further fallback; just return error
+    res
+      .status(404)
+      .send('MCP Apps UI resource not found and no signin URL provided');
+  } catch (error) {
+    Logger.error(
+      'MCP Apps UI proxy error:',
+      error instanceof Error ? error : undefined,
+      {
+        req: req.toString(),
+      }
+    );
+    res.status(500).send('Failed to load MCP Apps UI resource');
+  }
+});
+
 app.post('/api/get-book-list', async (req, res) => {
   try {
-    const result = await callToolWithReconnect({
-      name: 'goodreads_get_book_list',
-      sessionId: req.sessionID,
-      ipAddress: getClientIp(req),
-    });
+    const sessionId = req.sessionID;
+    const ipAddress = getClientIp(req);
+
+    const [result, uiResourceUri] = await Promise.all([
+      callToolWithReconnect({
+        name: TOOL_NAMES.GOODREADS_GET_BOOK_LIST,
+        sessionId,
+        ipAddress,
+      }),
+      getGoodreadsUiResourceUri(sessionId, ipAddress),
+    ]);
 
     const structuredContent = result.structuredContent as {
       url?: string;
@@ -109,6 +165,21 @@ app.post('/api/get-book-list', async (req, res) => {
         data: {
           url: proxyPath,
           signin_id: structuredContent.signin_id,
+          ui_resource_uri: uiResourceUri ?? null,
+          tool_result: {
+            ...result,
+            content:
+              (result.content as Array<Record<string, string>>)?.map(
+                (item: Record<string, string>) => ({
+                  ...item,
+                  text: item.text.replace(settings.GETGATHER_URL, appHost),
+                })
+              ) ?? [],
+            structuredContent: {
+              ...structuredContent,
+              url: proxyPath,
+            },
+          },
         },
       });
     }
