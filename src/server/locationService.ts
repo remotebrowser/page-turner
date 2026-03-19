@@ -1,6 +1,6 @@
 import { WebServiceClient } from '@maxmind/geoip2-node';
-import { settings } from './config.js';
 import { Request } from 'express';
+import { settings } from './config.js';
 
 type LocationData = {
   ip: string;

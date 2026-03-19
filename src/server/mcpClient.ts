@@ -10,8 +10,8 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { Logger } from '../utils/logger.js';
 import { settings } from './config.js';
-import { getLocation } from './locationService.js';
 import { TOOL_NAMES } from './constants.js';
+import { getLocation } from './locationService.js';
 
 const mcpClient: Record<string, Client | null> = {};
 
@@ -26,13 +26,15 @@ const goodreadsUiResourceBySession: Record<
   string,
   GoodreadsUiCacheEntry | undefined
 > = {};
+const mcpClientHeaders: Record<string, string | null> = {};
 let initPromise: Promise<Client> | null = null;
 
 const mcpUrl = `${settings.GETGATHER_URL}/mcp-books/`;
 Logger.info('mcpUrl', { mcpUrl });
 async function initializeMcpClient(
   sessionId: string,
-  ipAddress: string
+  ipAddress: string,
+  requestHeaders?: Record<string, string | undefined>
 ): Promise<Client> {
   if (mcpClient[sessionId]) return mcpClient[sessionId];
   if (initPromise) return initPromise;
@@ -55,13 +57,17 @@ async function initializeMcpClient(
 
     const location = await getLocation(ipAddress);
 
+    const dynamicHeaders = Object.fromEntries(
+      Object.entries(requestHeaders ?? {}).filter(
+        ([, value]) => typeof value === 'string'
+      )
+    );
     const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
       requestInit: {
         headers: {
           Authorization: `Bearer ${settings.GETGATHER_APP_KEY}_${sessionId}`,
-          'x-getgather-custom-app': 'page-turner',
-          'x-location': location ? JSON.stringify(location) : '',
           'x-incognito': '1',
+          ...dynamicHeaders,
         },
       },
     });
@@ -107,7 +113,8 @@ function getMcpClient(sessionId: string): Client {
 
 async function resetAndReinitializeMcpClient(
   sessionId: string,
-  ipAddress: string
+  ipAddress: string,
+  requestHeaders?: Record<string, string | undefined>
 ): Promise<Client> {
   try {
     if (mcpClient[sessionId]) {
@@ -116,7 +123,7 @@ async function resetAndReinitializeMcpClient(
   } finally {
     mcpClient[sessionId] = null;
   }
-  return initializeMcpClient(sessionId, ipAddress);
+  return initializeMcpClient(sessionId, ipAddress, requestHeaders);
 }
 
 export async function callToolWithReconnect(
@@ -125,6 +132,7 @@ export async function callToolWithReconnect(
     arguments?: Record<string, unknown>;
     sessionId: string;
     ipAddress: string;
+    headers?: Record<string, string | undefined>;
   },
   resultSchema?:
     | typeof CallToolResultSchema
@@ -135,18 +143,39 @@ export async function callToolWithReconnect(
     name: params.name,
     sessionId: params.sessionId,
   });
+  const { headers, ...toolParams } = params;
+  const headerSignature = JSON.stringify(
+    Object.fromEntries(
+      Object.entries(headers ?? {})
+        .filter(([, value]) => typeof value === 'string')
+        .sort(([left], [right]) => left.localeCompare(right))
+    )
+  );
   try {
+    if (mcpClientHeaders[params.sessionId] !== headerSignature) {
+      await resetAndReinitializeMcpClient(
+        params.sessionId,
+        params.ipAddress,
+        headers
+      );
+      mcpClientHeaders[params.sessionId] = headerSignature;
+    }
     const client = getMcpClient(params.sessionId);
-    return await client.callTool(params, resultSchema, options);
+    return await client.callTool(toolParams, resultSchema, options);
   } catch (err) {
     Logger.warn('callTool failed, attempting MCP client reconnect...', {
       name: params.name,
       sessionId: params.sessionId,
       error: err instanceof Error ? err.message : String(err),
     });
-    await resetAndReinitializeMcpClient(params.sessionId, params.ipAddress);
+    await resetAndReinitializeMcpClient(
+      params.sessionId,
+      params.ipAddress,
+      headers
+    );
+    mcpClientHeaders[params.sessionId] = headerSignature;
     const client = getMcpClient(params.sessionId);
-    return await client.callTool(params, resultSchema, options);
+    return await client.callTool(toolParams, resultSchema, options);
   }
 }
 
@@ -203,7 +232,7 @@ export async function fetchGoodreadsUiResourceUri(
 
     const tools = toolsResponse?.tools ?? [];
     const goodreadsTool = tools.find(
-      (tool) => tool.name === TOOL_NAMES.GOODREADS_GET_BOOK_LIST
+      (tool) => tool.name === TOOL_NAMES.GOODREADS_REMOTE_GET_BOOK_LIST
     );
 
     resourceUri = goodreadsTool?._meta?.ui?.resourceUri ?? null;
@@ -243,7 +272,7 @@ export async function readUiResourceHtml(
           c.mimeType === 'application/xhtml+xml'
       ) ?? contents[0];
 
-    return entry && 'text' in entry ? entry.text : null;
+    return entry && 'text' in entry ? (entry.text as string | null) : null;
   } catch (error) {
     Logger.warn('Failed to read UI resource', {
       resourceUri,

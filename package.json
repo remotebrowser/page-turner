@@ -1,5 +1,5 @@
 {
-  "name": "vite-express-project",
+  "name": "page-turner",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -21,6 +21,8 @@
     "@headlessui/react": "^2.2.4",
     "@maxmind/geoip2-node": "^6.1.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.71.0",
+    "@pydantic/logfire-node": "^0.13.0",
     "@sentry/node": "^10.15.0",
     "@sentry/react": "^10.15.0",
     "@tailwindcss/forms": "^0.5.10",

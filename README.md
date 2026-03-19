@@ -44,6 +44,6 @@ The app will work without Sentry configuration - errors will simply not be track
 ## Development
 
 ```bash
-npm install
+npm install --legacy-peer-deps
 npm run dev
 ```
