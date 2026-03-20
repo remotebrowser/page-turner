@@ -5,14 +5,32 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
 jobs:
   deploy:
     name: Deploy app
     runs-on: ubuntu-latest
     concurrency: deploy-group # optional: ensure only one action runs at a time
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - doppler-config: demo
+            app-name: page-turner
+            fly-toml: fly.toml
+          - doppler-config: lambda
+            app-name: page-turner-lambda
+            fly-toml: fly.lambda.toml
+
     steps:
       - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Deploy the app to Fly
+        uses: ./.github/actions/deploy-fly
+        with:
+          doppler-token: ${{ secrets.DOPPLER_TOKEN }}
+          doppler-project: page-turner
+          doppler-config: ${{ matrix.doppler-config }}
+          app-name: ${{ matrix.app-name }}
+          fly-toml: ${{ matrix.fly-toml }}
