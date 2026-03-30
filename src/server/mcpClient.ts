@@ -232,7 +232,7 @@ export async function fetchGoodreadsUiResourceUri(
 
     const tools = toolsResponse?.tools ?? [];
     const goodreadsTool = tools.find(
-      (tool) => tool.name === TOOL_NAMES.GOODREADS_REMOTE_GET_BOOK_LIST
+      (tool) => tool.name === TOOL_NAMES.GOODREADS_GET_BOOK_LIST
     );
 
     resourceUri = goodreadsTool?._meta?.ui?.resourceUri ?? null;
