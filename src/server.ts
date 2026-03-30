@@ -163,7 +163,7 @@ app.post('/api/get-book-list', async (req, res) => {
     const headers = await getMcpRequestHeaders(req);
     const [result, uiResourceUri] = await Promise.all([
       callToolWithReconnect({
-        name: TOOL_NAMES.GOODREADS_REMOTE_GET_BOOK_LIST,
+        name: TOOL_NAMES.GOODREADS_GET_BOOK_LIST,
         sessionId,
         ipAddress,
         headers,
