@@ -1,10 +1,10 @@
-import { useEffect, useRef } from 'react';
-import { transformData, type Book } from '../modules/DataTransformSchema';
-import { apiClient, type GetBookListResponse } from '../api';
 import * as Sentry from '@sentry/react';
-import Modal from './Modal';
+import { useEffect, useRef } from 'react';
+import { apiClient, type GetBookListResponse } from '../api';
 import goodreads from '../config/goodreads.json';
 import type { BrandConfig } from '../modules/Config';
+import { transformData, type Book } from '../modules/DataTransformSchema';
+import Modal from './Modal';
 
 const BRAND_CONFIG = goodreads as BrandConfig;
 const SENTRY_TAGS = {
@@ -39,6 +39,9 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const callbacksRef = useRef(props);
   callbacksRef.current = props;
+  const activeSigninIdRef = useRef<string | null>(null);
+  const startedSigninIdRef = useRef<string | null>(null);
+  const isMountedRef = useRef(false);
 
   const signinUiUrl = buildIframeUrl(
     bookListData.ui_resource_uri,
@@ -46,23 +49,29 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
   );
 
   useEffect(() => {
-    let cancelled = false;
+    const signinId = bookListData.signin_id;
+    activeSigninIdRef.current = signinId;
+    isMountedRef.current = true;
+
+    const isStale = () =>
+      !isMountedRef.current || activeSigninIdRef.current !== signinId;
 
     const onPollAuth = async () => {
       try {
         callbacksRef.current.onProgressStep?.(2);
         let pollResult;
         while (true) {
-          if (cancelled) return;
+          if (isStale()) return;
           try {
-            pollResult = await apiClient.pollSignin(bookListData.signin_id);
+            pollResult = await apiClient.pollSignin(signinId);
             if (pollResult?.status === 'SUCCESS') break;
           } catch (error) {
+            if (isStale()) return;
             Sentry.captureException(error, { tags: SENTRY_TAGS });
           }
         }
 
-        if (cancelled) return;
+        if (isStale()) return;
         const transformedData = transformData(
           pollResult,
           BRAND_CONFIG.dataTransform
@@ -71,9 +80,9 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
         callbacksRef.current.onSuccessConnect(
           transformedData as unknown as Book[]
         );
-        apiClient.finalizeSignin(bookListData.signin_id);
+        apiClient.finalizeSignin(signinId);
       } catch (error) {
-        if (cancelled) return;
+        if (isStale()) return;
         Sentry.captureException(error, {
           tags: SENTRY_TAGS,
           extra: { brandConfig: BRAND_CONFIG },
@@ -84,10 +93,13 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
       }
     };
 
-    onPollAuth();
+    if (startedSigninIdRef.current !== signinId) {
+      startedSigninIdRef.current = signinId;
+      void onPollAuth();
+    }
 
     return () => {
-      cancelled = true;
+      isMountedRef.current = false;
     };
   }, [bookListData.signin_id]);
 

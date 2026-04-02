@@ -235,7 +235,7 @@ app.post('/api/poll-signin', async (req, res) => {
     }
 
     const headers = await getMcpRequestHeaders(req);
-    const result = await callToolWithReconnect(
+    const signInResult = await callToolWithReconnect(
       {
         name: 'check_signin',
         arguments: { signin_id },
@@ -250,26 +250,38 @@ app.post('/api/poll-signin', async (req, res) => {
       }
     );
 
-    const structuredContent = result.structuredContent as {
+    const signInContent = signInResult.structuredContent as {
       status?: string;
       message?: string;
-      result?: Array<{
-        title: string;
-        author: string;
-        rating: string;
-        url: string;
-        cover: string;
-        shelf: string;
-        added_date: string;
-      }>;
     };
+    let bookListContent = null;
+    if (signInContent.status === 'SUCCESS') {
+      const bookListResult = await callToolWithReconnect({
+        name: TOOL_NAMES.GOODREADS_GET_BOOK_LIST,
+        sessionId: req.sessionID,
+        ipAddress: getClientIp(req),
+        headers: { ...headers, 'x-signin-id': signin_id },
+      });
+      const structuredContent = bookListResult.structuredContent as {
+        goodreads_book_list: Array<{
+          title: string;
+          author: string;
+          rating: string;
+          url: string;
+          cover: string;
+          shelf: string;
+          added_date: string;
+        }>;
+      };
+      bookListContent = structuredContent.goodreads_book_list;
+    }
 
     res.json({
       success: true,
       data: {
-        status: structuredContent.status,
-        message: structuredContent.message,
-        [goodreadsConfig.dataTransform.dataPath]: structuredContent.result,
+        status: signInContent.status,
+        message: signInContent.message,
+        [goodreadsConfig.dataTransform.dataPath]: bookListContent ?? [],
       },
     });
   } catch (error) {
