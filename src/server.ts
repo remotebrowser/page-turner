@@ -185,6 +185,9 @@ app.post('/api/get-book-list', async (req, res) => {
     };
 
     if (structuredContent?.url?.includes(settings.GETGATHER_URL ?? '')) {
+      Logger.info('signin URL found', {
+        signin_id: structuredContent.signin_id,
+      });
       const appHost = getAppHost(req);
       const proxyPath = structuredContent.url.replace(
         settings.GETGATHER_URL,
@@ -215,6 +218,7 @@ app.post('/api/get-book-list', async (req, res) => {
       });
     }
 
+    Logger.error('No signin URL found');
     return res.json({
       success: false,
       error: 'No signin URL found',
@@ -263,6 +267,7 @@ app.post('/api/poll-signin', async (req, res) => {
     };
     let bookListContent = null;
     if (signInContent.status === 'SUCCESS') {
+      Logger.info('Signin success', { signin_id });
       const bookListResult = await callToolWithReconnect({
         name: TOOL_NAMES.GOODREADS_GET_BOOK_LIST,
         sessionId: req.sessionID,
@@ -281,6 +286,7 @@ app.post('/api/poll-signin', async (req, res) => {
         }>;
       };
       bookListContent = structuredContent.goodreads_book_list;
+      Logger.info('Book list received', { count: bookListContent.length });
     }
 
     res.json({
@@ -326,6 +332,7 @@ app.post('/api/finalize-signin', async (req, res) => {
         maxTotalTimeout: 600_000,
       }
     );
+    Logger.info('Signin finalized', { signin_id });
 
     res.json({
       success: true,
