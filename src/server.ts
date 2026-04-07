@@ -162,12 +162,19 @@ app.post('/api/get-book-list', async (req, res) => {
 
     const headers = await getMcpRequestHeaders(req);
     const [result, uiResourceUri] = await Promise.all([
-      callToolWithReconnect({
-        name: TOOL_NAMES.GOODREADS_GET_BOOK_LIST,
-        sessionId,
-        ipAddress,
-        headers,
-      }),
+      callToolWithReconnect(
+        {
+          name: TOOL_NAMES.GOODREADS_GET_BOOK_LIST,
+          sessionId,
+          ipAddress,
+          headers,
+        },
+        undefined,
+        {
+          timeout: 600_000,
+          maxTotalTimeout: 600_000,
+        }
+      ),
       getGoodreadsUiResourceUri(sessionId, ipAddress),
     ]);
 
@@ -245,8 +252,8 @@ app.post('/api/poll-signin', async (req, res) => {
       },
       undefined,
       {
-        timeout: 6000000,
-        maxTotalTimeout: 6000000,
+        timeout: 600_000,
+        maxTotalTimeout: 600_000,
       }
     );
 
@@ -315,8 +322,8 @@ app.post('/api/finalize-signin', async (req, res) => {
       },
       undefined,
       {
-        timeout: 6000000,
-        maxTotalTimeout: 6000000,
+        timeout: 600_000,
+        maxTotalTimeout: 600_000,
       }
     );
 
