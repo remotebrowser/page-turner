@@ -63,6 +63,7 @@ async function initializeMcpClient(
       )
     );
     const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
+      sessionId,
       requestInit: {
         headers: {
           Authorization: `Bearer ${settings.GETGATHER_APP_KEY}_${sessionId}`,

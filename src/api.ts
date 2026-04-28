@@ -1,3 +1,5 @@
+import { getSessionHeaders } from './sessionContext';
+
 const API_BASE_URL = '/api';
 
 type ApiResponse<T> = {
@@ -31,11 +33,12 @@ export class ApiClient {
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     const response = await fetch(url, {
+      ...options,
       headers: {
         'Content-Type': 'application/json',
+        ...getSessionHeaders(),
         ...options.headers,
       },
-      ...options,
     });
 
     if (!response.ok) {

@@ -3,10 +3,8 @@ import bodyParser from 'body-parser';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
-import session, { SessionData } from 'express-session';
 import { createProxyMiddleware, fixRequestBody } from 'http-proxy-middleware';
 import { createRequire } from 'module';
-import { customAlphabet } from 'nanoid';
 import { Socket } from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -21,8 +19,12 @@ import {
   readUiResourceHtml,
 } from './server/mcpClient.js';
 import { Logger } from './utils/logger.js';
-const genSessionId = () =>
-  customAlphabet('23456789abcdefghijkmnpqrstuvwxyz', 8)();
+
+declare module 'express-serve-static-core' {
+  interface Request {
+    sessionID: string;
+  }
+}
 
 dotenv.config();
 
@@ -76,26 +78,34 @@ async function getMcpRequestHeaders(req: express.Request) {
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(
-  session({
-    secret: '1234567890',
-    genid: genSessionId,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: settings.NODE_ENV === 'production',
-      httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    },
-  })
-);
-app.use((req, res, next) => {
-  if (!('createdAt' in req.session)) {
-    (req.session as unknown as SessionData & { createdAt: number }).createdAt =
-      Date.now();
+
+function readSessionIdFromCookie(req: express.Request): string | undefined {
+  const cookieHeader = req.headers['cookie'];
+  if (!cookieHeader) return undefined;
+  const match = cookieHeader.match(/(?:^|; )mcp-session-id=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : undefined;
+}
+
+function requireSession(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  const headerValue = req.headers['x-mcp-session-id'];
+  const headerSessionId = Array.isArray(headerValue)
+    ? headerValue[0]
+    : headerValue;
+  const sessionId = headerSessionId || readSessionIdFromCookie(req);
+  if (!sessionId) {
+    res.status(400).json({ error: 'mcp-session-id is required' });
+    return;
   }
+  req.sessionID = sessionId;
+  Sentry.getIsolationScope().setTag('mcp_session_id', sessionId);
   next();
-});
+}
+
+app.use('/api', requireSession);
 
 app.get('/internal/sentry/config', (_, res) => {
   res.json({

@@ -1,6 +1,7 @@
 import { useReducer } from 'react';
 import type { Book } from '../modules/DataTransformSchema';
 import { apiClient, type GetBookListResponse } from '../api';
+import { resetSession } from '../sessionContext';
 
 import { LoadingPage } from './LoadingPage';
 import { OnboardingPage } from './OnboardingPage';
@@ -133,6 +134,7 @@ export function MainPage() {
   });
 
   const handleConnectStart = () => {
+    resetSession();
     dispatch({ type: 'START_CONNECTION' });
     apiClient
       .getBookList()
