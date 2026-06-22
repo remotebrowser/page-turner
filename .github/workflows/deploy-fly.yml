@@ -17,6 +17,11 @@ on:
         required: false
         type: boolean
         default: true
+      daytona:
+        description: Deploy page-turner-daytona
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   prepare-matrix:
@@ -28,11 +33,13 @@ jobs:
         uses: remotebrowser/shared-github-actions/prepare-matrix@v1
         with:
           entries: |
-            { "env": "demo",   "config": "demo",   "app_name": "page-turner",        "fly_toml": "fly.toml"        }
-            { "env": "lambda", "config": "lambda", "app_name": "page-turner-lambda", "fly_toml": "fly.lambda.toml" }
+            { "env": "demo",    "config": "demo",    "app_name": "page-turner",         "fly_toml": "fly.toml"        }
+            { "env": "lambda",  "config": "lambda",  "app_name": "page-turner-lambda",  "fly_toml": "fly.lambda.toml" }
+            { "env": "daytona", "config": "daytona", "app_name": "page-turner-daytona", "fly_toml": "fly.toml" }
           selections: |
-            ${{ inputs.demo   && 'demo'   || '' }}
-            ${{ inputs.lambda && 'lambda' || '' }}
+            ${{ inputs.demo    && 'demo'    || '' }}
+            ${{ inputs.lambda  && 'lambda'  || '' }}
+            ${{ inputs.daytona && 'daytona' || '' }}
           key-field: env
 
   deploy:
