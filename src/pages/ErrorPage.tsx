@@ -24,11 +24,7 @@ export function ErrorPage({
         {/* Logo and Brand */}
         <div className="text-center">
           <div className="flex items-center justify-center mb-6">
-            <img
-              src={pageTurnerLogo}
-              alt="PageTurner"
-              className="h-12"
-            />
+            <img src={pageTurnerLogo} alt="PageTurner" className="h-12" />
           </div>
         </div>
 

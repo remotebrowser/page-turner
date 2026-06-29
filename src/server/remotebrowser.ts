@@ -1,0 +1,191 @@
+import { Logger } from '../utils/logger.js';
+import { settings } from './config.js';
+
+const REMOTEBROWSER_RETRY_TIMEOUT_MS = 30_000;
+const REMOTEBROWSER_RETRY_INTERVAL_MS = 1_000;
+
+function baseUrl(): string {
+  return settings.GETGATHER_URL.replace(/\/+$/, '');
+}
+
+function buildUrl(path: string): string {
+  return `${baseUrl()}${path}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function toFetchHeaders(
+  headers: Record<string, string | undefined>
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined
+    )
+  );
+}
+
+export async function prepareNewBrowser(
+  browserId: string,
+  headers: Record<string, string | undefined> = {}
+): Promise<{ browserId: string; pageId: string }> {
+  const fetchHeaders = toFetchHeaders(headers);
+
+  const createRes = await fetch(buildUrl(`/api/v1/browsers/${browserId}`), {
+    method: 'POST',
+    headers: fetchHeaders,
+  });
+  if (createRes.status !== 200) {
+    const errorBody = await createRes.text().catch(() => '');
+    const detail = errorBody ? `: ${errorBody}` : '';
+    throw new Error(
+      `Failed to create browser ${browserId}: HTTP ${createRes.status}${detail}`
+    );
+  }
+
+  const deadline = Date.now() + REMOTEBROWSER_RETRY_TIMEOUT_MS;
+  let pageId: string | undefined;
+  while (Date.now() < deadline) {
+    try {
+      const pagesRes = await fetch(
+        buildUrl(`/api/v1/browsers/${browserId}/pages`)
+      );
+      if (pagesRes.ok) {
+        const pageIds = (await pagesRes.json()) as unknown[];
+        if (Array.isArray(pageIds) && pageIds.length > 0) {
+          pageId = String(pageIds[0]);
+          break;
+        }
+      }
+    } catch (error) {
+      Logger.debug('Fetching pages failed, retrying', {
+        browserId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    await sleep(REMOTEBROWSER_RETRY_INTERVAL_MS);
+  }
+
+  if (!pageId) {
+    await deleteBrowser(browserId);
+    throw new Error(`Browser ${browserId} never exposed any pages`);
+  }
+
+  return { browserId, pageId };
+}
+
+export async function navigatePage(
+  browserId: string,
+  pageId: string,
+  url: string
+): Promise<void> {
+  const endpoint = `/api/v1/browsers/${browserId}/pages/${pageId}/navigate`;
+  const deadline = Date.now() + REMOTEBROWSER_RETRY_TIMEOUT_MS;
+  let lastStatus: number | undefined;
+
+  while (Date.now() < deadline) {
+    const res = await fetch(
+      `${buildUrl(endpoint)}?url=${encodeURIComponent(url)}`,
+      { method: 'POST' }
+    );
+    if (res.status === 200) return;
+    lastStatus = res.status;
+    await sleep(REMOTEBROWSER_RETRY_INTERVAL_MS);
+  }
+
+  throw new Error(
+    `Navigate to ${url} never returned 200 (last status: ${
+      lastStatus ?? 'unknown'
+    })`
+  );
+}
+
+export async function distillPage(
+  browserId: string,
+  pageId: string,
+  fields?: Record<string, string>
+): Promise<void> {
+  const endpoint = `/api/v1/browsers/${browserId}/pages/${pageId}/distill`;
+  const body = new URLSearchParams(fields ?? {}).toString();
+  const deadline = Date.now() + REMOTEBROWSER_RETRY_TIMEOUT_MS;
+  let lastStatus: number | undefined;
+
+  while (Date.now() < deadline) {
+    const res = await fetch(buildUrl(endpoint), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    if (res.status === 200) return;
+    lastStatus = res.status;
+    await sleep(REMOTEBROWSER_RETRY_INTERVAL_MS);
+  }
+
+  throw new Error(
+    `Distill never returned 200 for ${browserId}/${pageId} (last status: ${
+      lastStatus ?? 'unknown'
+    })`
+  );
+}
+
+export async function getDistilledJson<T = unknown>(
+  browserId: string,
+  pageId: string
+): Promise<T> {
+  const endpoint = `/api/v1/browsers/${browserId}/pages/${pageId}/distilled`;
+  const deadline = Date.now() + REMOTEBROWSER_RETRY_TIMEOUT_MS;
+  let lastStatus: number | undefined;
+
+  while (Date.now() < deadline) {
+    const res = await fetch(buildUrl(endpoint));
+    if (res.status === 200) {
+      return (await res.json()) as T;
+    }
+    lastStatus = res.status;
+    await sleep(REMOTEBROWSER_RETRY_INTERVAL_MS);
+  }
+
+  throw new Error(
+    `Distilled endpoint never returned 200 for ${browserId}/${pageId} (last status: ${
+      lastStatus ?? 'unknown'
+    })`
+  );
+}
+
+export async function getDistilledHtml(
+  browserId: string,
+  pageId: string
+): Promise<string> {
+  const endpoint = `/api/v1/browsers/${browserId}/pages/${pageId}/distilled`;
+  const deadline = Date.now() + REMOTEBROWSER_RETRY_TIMEOUT_MS;
+  let lastStatus: number | undefined;
+
+  while (Date.now() < deadline) {
+    const res = await fetch(buildUrl(endpoint));
+    if (res.status === 200) {
+      return await res.text();
+    }
+    lastStatus = res.status;
+    await sleep(REMOTEBROWSER_RETRY_INTERVAL_MS);
+  }
+
+  throw new Error(
+    `Distilled endpoint never returned 200 for ${browserId}/${pageId} (last status: ${
+      lastStatus ?? 'unknown'
+    })`
+  );
+}
+
+export async function deleteBrowser(browserId: string): Promise<void> {
+  try {
+    await fetch(buildUrl(`/api/v1/browsers/${browserId}`), {
+      method: 'DELETE',
+    });
+  } catch (error) {
+    Logger.warn('Failed to delete browser', {
+      browserId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}

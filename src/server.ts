@@ -4,20 +4,22 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
 import { createProxyMiddleware, fixRequestBody } from 'http-proxy-middleware';
+import { parseHTML } from 'linkedom';
 import { createRequire } from 'module';
 import { Socket } from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { BrandConfig } from './modules/Config';
 import { settings } from './server/config.js';
-import { TOOL_NAMES } from './server/constants.js';
 import './server/instrument.js';
 import { getClientIp, getLocation } from './server/locationService.js';
 import {
-  callToolWithReconnect,
-  getGoodreadsUiResourceUri,
-  readUiResourceHtml,
-} from './server/mcpClient.js';
+  distillPage,
+  getDistilledHtml,
+  getDistilledJson,
+  navigatePage,
+  prepareNewBrowser,
+} from './server/remotebrowser.js';
 import { Logger } from './utils/logger.js';
 
 declare module 'express-serve-static-core' {
@@ -38,19 +40,52 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-function getAppHost(req: express.Request): string {
-  // If APP_HOST is explicitly set, use it
-  if (process.env.APP_HOST) {
-    return process.env.APP_HOST;
+function formatDistilledPage(
+  html: string,
+  sessionId: string,
+  pageId: string
+): string {
+  const { document } = parseHTML(html);
+
+  document.querySelectorAll('h1').forEach((h1) => h1.remove());
+
+  const link = document.createElement('link');
+  link.setAttribute('rel', 'stylesheet');
+  link.setAttribute('href', '/style.css');
+  document.head.appendChild(link);
+
+  const script = document.createElement('script');
+  script.setAttribute('src', '/signin.js');
+  script.setAttribute('defer', '');
+  document.head.appendChild(script);
+
+  const form = document.createElement('form');
+  form.setAttribute('method', 'POST');
+  form.setAttribute('action', '/api/get-book-list');
+
+  const idInput = document.createElement('input');
+  idInput.setAttribute('type', 'hidden');
+  idInput.setAttribute('name', 'id');
+  idInput.setAttribute('value', sessionId);
+  form.appendChild(idInput);
+
+  const pageIdInput = document.createElement('input');
+  pageIdInput.setAttribute('type', 'hidden');
+  pageIdInput.setAttribute('name', 'pageId');
+  pageIdInput.setAttribute('value', pageId);
+  form.appendChild(pageIdInput);
+
+  const body = document.body;
+  while (body.firstChild) {
+    form.appendChild(body.firstChild);
   }
 
-  // Get protocol (http/https)
-  const protocol = req.protocol;
+  const card = document.createElement('div');
+  card.setAttribute('class', 'card');
+  card.appendChild(form);
+  body.appendChild(card);
 
-  // Get host (includes hostname and port if present)
-  const host = req.get('host') || 'localhost:5173';
-
-  return `${protocol}://${host}`;
+  return `<!doctype html>${document.documentElement.outerHTML}`;
 }
 
 function normalizeHeaderValue(
@@ -60,24 +95,17 @@ function normalizeHeaderValue(
   return value;
 }
 
-async function getMcpRequestHeaders(req: express.Request) {
-  const connection = (req.query['connection'] as string) || null;
+async function getImportantHeaders(req: express.Request) {
   return {
     'x-origin-ip': getClientIp(req),
-    'x-forwarded-for': getClientIp(req),
     'user-agent': normalizeHeaderValue(req.headers['user-agent']),
-    'sec-ch-ua': normalizeHeaderValue(req.headers['sec-ch-ua']),
-    'sec-ch-ua-mobile': normalizeHeaderValue(req.headers['sec-ch-ua-mobile']),
-    'sec-ch-ua-platform': normalizeHeaderValue(
-      req.headers['sec-ch-ua-platform']
-    ),
-    'x-proxy-type': connection || undefined,
   };
 }
 
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 function readSessionIdFromCookie(req: express.Request): string | undefined {
   const cookieHeader = req.headers['cookie'];
@@ -120,121 +148,151 @@ app.get('/health', (req, res) => {
 });
 
 // API Routes
-app.get('/api/mcp-apps/ui', async (req, res) => {
+
+const GOODREADS_REVIEW_LIST_URL = 'https://www.goodreads.com/review/list';
+
+async function initiateDistill(
+  sessionId: string,
+  pageId: string,
+  fields: Record<string, string> = {}
+): Promise<{ json?: unknown[]; html?: string }> {
+  const browserId = sessionId;
+
+  await distillPage(browserId, pageId, fields);
+
   try {
-    const resourceUri = req.query.resourceUri;
-
-    if (typeof resourceUri !== 'string' || !resourceUri) {
-      res.status(400).send('resourceUri query parameter is required');
-      return;
+    const distilled = await getDistilledJson<unknown[]>(browserId, pageId);
+    if (Array.isArray(distilled) && distilled.length > 0) {
+      return { json: distilled };
     }
-
-    const sessionId = req.sessionID;
-    const ipAddress = getClientIp(req);
-
-    const html = await readUiResourceHtml(sessionId, ipAddress, resourceUri);
-
-    if (html) {
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.send(html);
-      return;
-    }
-
-    // Fallback: use signin URL from request query if present
-    const signinUrl =
-      typeof req.query.signin_url === 'string'
-        ? req.query.signin_url
-        : undefined;
-    if (signinUrl) {
-      return res.redirect(signinUrl);
-    }
-
-    // No further fallback; just return error
-    res
-      .status(404)
-      .send('MCP Apps UI resource not found and no signin URL provided');
-  } catch (error) {
-    Logger.error(
-      'MCP Apps UI proxy error:',
-      error instanceof Error ? error : undefined,
+  } catch (jsonError) {
+    Logger.info(
+      'Failed to obtain distilled JSON, falling back to distilled HTML',
       {
-        req: req.toString(),
+        error:
+          jsonError instanceof Error ? jsonError.message : String(jsonError),
       }
     );
-    res.status(500).send('Failed to load MCP Apps UI resource');
+  }
+
+  const html = await getDistilledHtml(browserId, pageId);
+  return { html };
+}
+
+app.post('/api/get-book-list', async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+
+  let sessionId: string | undefined;
+  let pageId: string | undefined;
+  const fields: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined || value === null) continue;
+    const stringValue = typeof value === 'string' ? value : String(value);
+    if (key === 'id' || key === 'sessionId') {
+      sessionId = stringValue;
+    } else if (key === 'pageId') {
+      pageId = stringValue;
+    } else {
+      fields[key] = stringValue;
+    }
+  }
+
+  if (!sessionId) {
+    sessionId = req.sessionID;
+  }
+
+  if (!sessionId) {
+    return res.status(503).send();
+  }
+
+  Logger.info('get-book-list resolved ids', { sessionId, pageId });
+
+  try {
+    let browserId = sessionId;
+    let resolvedPageId: string;
+
+    if (!pageId) {
+      const headers = await getImportantHeaders(req);
+      const prepared = await prepareNewBrowser(sessionId, headers);
+      browserId = prepared.browserId;
+      resolvedPageId = prepared.pageId;
+      await navigatePage(browserId, resolvedPageId, GOODREADS_REVIEW_LIST_URL);
+    } else {
+      resolvedPageId = pageId;
+    }
+
+    const { json, html } = await initiateDistill(
+      browserId,
+      resolvedPageId,
+      fields
+    );
+
+    const responseData: Record<string, unknown> = {
+      browserId,
+      pageId: resolvedPageId,
+    };
+    if (json !== undefined) {
+      responseData.json = json;
+    }
+    if (html) {
+      responseData.html = formatDistilledPage(
+        html,
+        req.sessionID,
+        resolvedPageId
+      );
+    }
+
+    return res.json({
+      success: true,
+      data: responseData,
+    });
+  } catch (error) {
+    Logger.error('get-book-list handler failed', error as Error, { sessionId, pageId });
+    return res.status(500).send();
   }
 });
 
-app.post('/api/get-book-list', async (req, res) => {
+app.post('/api/poll-browser', async (req, res) => {
   try {
-    const sessionId = req.sessionID;
-    const ipAddress = getClientIp(req);
+    const { browser_id, page_id } = req.body;
 
-    const headers = await getMcpRequestHeaders(req);
-    const [result, uiResourceUri] = await Promise.all([
-      callToolWithReconnect(
-        {
-          name: TOOL_NAMES.GOODREADS_GET_BOOK_LIST,
-          sessionId,
-          ipAddress,
-          headers,
-        },
-        undefined,
-        {
-          timeout: 600_000,
-          maxTotalTimeout: 600_000,
-        }
-      ),
-      getGoodreadsUiResourceUri(sessionId, ipAddress),
-    ]);
-
-    const structuredContent = result.structuredContent as {
-      url?: string;
-      signin_id?: string;
-      [goodreadsConfig.dataTransform.dataPath]: unknown;
-    };
-
-    if (structuredContent?.url?.includes(settings.GETGATHER_URL ?? '')) {
-      Logger.info('signin URL found', {
-        signin_id: structuredContent.signin_id,
-      });
-      const appHost = getAppHost(req);
-      const proxyPath = structuredContent.url.replace(
-        settings.GETGATHER_URL,
-        `${appHost}`
-      );
-
-      return res.json({
-        success: true,
-        data: {
-          url: proxyPath,
-          signin_id: structuredContent.signin_id,
-          ui_resource_uri: uiResourceUri ?? null,
-          tool_result: {
-            ...result,
-            content:
-              (result.content as Array<Record<string, string>>)?.map(
-                (item: Record<string, string>) => ({
-                  ...item,
-                  text: item.text.replace(settings.GETGATHER_URL, appHost),
-                })
-              ) ?? [],
-            structuredContent: {
-              ...structuredContent,
-              url: proxyPath,
-            },
-          },
-        },
+    if (!browser_id || !page_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'browser_id and page_id are required',
       });
     }
 
-    Logger.error('No signin URL found');
-    return res.json({
-      success: false,
-      error: 'No signin URL found',
+    let bookListContent: unknown[] = [];
+    let status = 'PENDING';
+    try {
+      const distilled = await getDistilledJson<unknown[]>(browser_id, page_id);
+      if (Array.isArray(distilled) && distilled.length > 0) {
+        const transformed = distilled;
+        if (transformed.length > 0) {
+          bookListContent = transformed;
+          status = 'SUCCESS';
+        }
+      }
+    } catch (pollError) {
+      Logger.debug('Browser poll did not yield JSON, returning PENDING', {
+        browser_id,
+        page_id,
+        error:
+          pollError instanceof Error ? pollError.message : String(pollError),
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        status,
+        [goodreadsConfig.dataTransform.dataPath]: bookListContent,
+      },
     });
   } catch (error) {
-    Logger.error('Get book list error:', error as Error, {
+    Logger.error('Poll browser error:', error as Error, {
       req: req.toString(),
     });
     res.status(500).json({
@@ -244,111 +302,24 @@ app.post('/api/get-book-list', async (req, res) => {
   }
 });
 
-app.post('/api/poll-signin', async (req, res) => {
+app.post('/api/finalize-browser', async (req, res) => {
   try {
-    const { signin_id } = req.body;
+    const { browser_id, page_id } = req.body;
 
-    if (!signin_id) {
+    if (!browser_id || !page_id) {
       return res.status(400).json({
         success: false,
-        error: 'signin_id is required',
+        error: 'browser_id and page_id are required',
       });
     }
 
-    const headers = await getMcpRequestHeaders(req);
-    const signInResult = await callToolWithReconnect(
-      {
-        name: 'check_signin',
-        arguments: { signin_id },
-        sessionId: req.sessionID,
-        ipAddress: getClientIp(req),
-        headers,
-      },
-      undefined,
-      {
-        timeout: 600_000,
-        maxTotalTimeout: 600_000,
-      }
-    );
-
-    const signInContent = signInResult.structuredContent as {
-      status?: string;
-      message?: string;
-    };
-    let bookListContent = null;
-    if (signInContent.status === 'SUCCESS') {
-      Logger.info('Signin success', { signin_id });
-      const bookListResult = await callToolWithReconnect({
-        name: TOOL_NAMES.GOODREADS_GET_BOOK_LIST,
-        sessionId: req.sessionID,
-        ipAddress: getClientIp(req),
-        headers: { ...headers, 'x-signin-id': signin_id },
-      });
-      const structuredContent = bookListResult.structuredContent as {
-        goodreads_book_list: Array<{
-          title: string;
-          author: string;
-          rating: string;
-          url: string;
-          cover: string;
-          shelf: string;
-          added_date: string;
-        }>;
-      };
-      bookListContent = structuredContent.goodreads_book_list;
-      Logger.info('Book list received', { count: bookListContent.length });
-    }
-
-    res.json({
-      success: true,
-      data: {
-        status: signInContent.status,
-        message: signInContent.message,
-        [goodreadsConfig.dataTransform.dataPath]: bookListContent ?? [],
-      },
-    });
-  } catch (error) {
-    Logger.error('Poll auth error:', error as Error, { req: req.toString() });
-    res.status(500).json({
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
-});
-
-app.post('/api/finalize-signin', async (req, res) => {
-  try {
-    const { signin_id } = req.body;
-
-    if (!signin_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'signin_id is required',
-      });
-    }
-
-    const headers = await getMcpRequestHeaders(req);
-    await callToolWithReconnect(
-      {
-        name: 'finalize_signin',
-        arguments: { signin_id },
-        sessionId: req.sessionID,
-        ipAddress: getClientIp(req),
-        headers,
-      },
-      undefined,
-      {
-        timeout: 600_000,
-        maxTotalTimeout: 600_000,
-      }
-    );
-    Logger.info('Signin finalized', { signin_id });
+    Logger.info('Browser finalized', { browser_id, page_id });
 
     res.json({
       success: true,
     });
   } catch (error) {
-    Logger.error('Finalize signin error:', error as Error, {
+    Logger.error('Finalize browser error:', error as Error, {
       req: req.toString(),
     });
     res.status(500).json({
@@ -450,7 +421,6 @@ if (settings.NODE_ENV === 'production') {
   });
 }
 
-// Initialize MCP client and start server
 async function startServer() {
   try {
     app.listen(PORT, () => {
@@ -463,7 +433,7 @@ async function startServer() {
       }
     });
   } catch (error) {
-    Logger.error('Failed to initialize MCP client:', error as Error);
+    Logger.error('Failed to start server:', error as Error);
     process.exit(1);
   }
 }

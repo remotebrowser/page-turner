@@ -13,19 +13,6 @@ const SENTRY_TAGS = {
   brand_name: BRAND_CONFIG.brand_name,
 };
 
-function buildIframeUrl(
-  uiResourceUri: string | null | undefined,
-  signinUrl?: string
-): string {
-  const base = uiResourceUri
-    ? `/api/mcp-apps/ui?resourceUri=${encodeURIComponent(uiResourceUri)}${
-        signinUrl ? `&signin_url=${encodeURIComponent(signinUrl)}` : ''
-      }`
-    : (signinUrl ?? '');
-  const separator = base.includes('?') ? '&' : '?';
-  return `${base}${separator}theme=light`;
-}
-
 type GoodreadsConnectionModalProps = {
   bookListData: GetBookListResponse;
   onSuccessConnect: (data: Book[]) => void;
@@ -36,35 +23,39 @@ type GoodreadsConnectionModalProps = {
 
 export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
   const { bookListData } = props;
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const callbacksRef = useRef(props);
   callbacksRef.current = props;
-  const activeSigninIdRef = useRef<string | null>(null);
-  const startedSigninIdRef = useRef<string | null>(null);
-  const isMountedRef = useRef(false);
-
-  const signinUiUrl = buildIframeUrl(
-    bookListData.ui_resource_uri,
-    bookListData.url
-  );
+  const activeKeyRef = useRef<string | null>(null);
+  const startedBrowserPageRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const signinId = bookListData.signin_id;
-    activeSigninIdRef.current = signinId;
-    isMountedRef.current = true;
+    if (!bookListData.html) return;
+    callbacksRef.current.onProgressStep?.(2);
+  }, [bookListData.html]);
 
-    const isStale = () =>
-      !isMountedRef.current || activeSigninIdRef.current !== signinId;
+  useEffect(() => {
+    const browserId = bookListData.browserId;
+    const pageId = bookListData.pageId;
+    if (!browserId || !pageId) return;
+    const key = `${browserId}:${pageId}`;
+    activeKeyRef.current = key;
 
-    const onPollAuth = async () => {
+    const isStale = () => activeKeyRef.current !== key;
+
+    const onPollBrowser = async () => {
       try {
         callbacksRef.current.onProgressStep?.(2);
         let pollResult;
         while (true) {
-          if (isStale()) return;
+          if (isStale()) {
+            return;
+          }
           try {
-            pollResult = await apiClient.pollSignin(signinId);
-            if (pollResult?.status === 'SUCCESS') break;
+            pollResult = await apiClient.pollBrowser(browserId, pageId);
+            if (pollResult?.status === 'SUCCESS') {
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 5000));
           } catch (error) {
             if (isStale()) return;
             Sentry.captureException(error, { tags: SENTRY_TAGS });
@@ -80,7 +71,7 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
         callbacksRef.current.onSuccessConnect(
           transformedData as unknown as Book[]
         );
-        apiClient.finalizeSignin(signinId);
+        apiClient.finalizeBrowser(browserId, pageId);
       } catch (error) {
         if (isStale()) return;
         Sentry.captureException(error, {
@@ -93,66 +84,19 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
       }
     };
 
-    if (startedSigninIdRef.current !== signinId) {
-      startedSigninIdRef.current = signinId;
-      void onPollAuth();
+    if (startedBrowserPageRef.current !== key) {
+      startedBrowserPageRef.current = key;
+      void onPollBrowser();
     }
 
     return () => {
-      isMountedRef.current = false;
-    };
-  }, [bookListData.signin_id]);
-
-  useEffect(() => {
-    const iframe = iframeRef.current;
-    if (!iframe) return;
-
-    const onLoad = () => {
-      try {
-        iframe.contentWindow?.postMessage(
-          {
-            jsonrpc: '2.0',
-            method: 'ui/notifications/tool-result',
-            params: bookListData.tool_result,
-          },
-          '*'
-        );
-      } catch (error) {
-        console.error('Failed to post tool-result message to iframe', error);
+      if (activeKeyRef.current === key) {
+        activeKeyRef.current = null;
       }
     };
+  }, [bookListData.browserId, bookListData.pageId]);
 
-    const onMessage = (event: MessageEvent) => {
-      const message = event.data;
-      if (
-        !message ||
-        message.jsonrpc !== '2.0' ||
-        message.method !== 'ui/initialize'
-      )
-        return;
-
-      try {
-        iframe.contentWindow?.postMessage(
-          {
-            jsonrpc: '2.0',
-            id: message.id,
-            result: { hostContext: { theme: 'light' } },
-          },
-          '*'
-        );
-      } catch (error) {
-        console.error('Failed to post ui/initialize response', error);
-      }
-    };
-
-    iframe.addEventListener('load', onLoad);
-    window.addEventListener('message', onMessage);
-
-    return () => {
-      iframe.removeEventListener('load', onLoad);
-      window.removeEventListener('message', onMessage);
-    };
-  }, [bookListData.tool_result]);
+  const iframeContent = bookListData.html;
 
   return (
     <Modal
@@ -170,8 +114,7 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
     >
       <div className="relative pt-5">
         <iframe
-          ref={iframeRef}
-          src={signinUiUrl}
+          srcDoc={iframeContent}
           sandbox="allow-same-origin allow-scripts allow-forms"
           className="w-full h-[380px] rounded-xl border border-gray-200"
         />

@@ -9,10 +9,10 @@ type ApiResponse<T> = {
 };
 
 export type GetBookListResponse = {
-  url: string;
-  signin_id: string;
-  ui_resource_uri?: string | null;
-  tool_result?: unknown;
+  json?: unknown[];
+  html?: string;
+  browserId?: string;
+  pageId?: string;
 };
 
 type PollAuthResponse = {
@@ -61,17 +61,20 @@ export class ApiClient {
     });
   }
 
-  async pollSignin(signinId: string): Promise<PollAuthResponse> {
-    return this.request<PollAuthResponse>('/poll-signin', {
+  async pollBrowser(
+    browserId: string,
+    pageId: string
+  ): Promise<PollAuthResponse> {
+    return this.request<PollAuthResponse>('/poll-browser', {
       method: 'POST',
-      body: JSON.stringify({ signin_id: signinId }),
+      body: JSON.stringify({ browser_id: browserId, page_id: pageId }),
     });
   }
 
-  async finalizeSignin(signinId: string): Promise<void> {
-    return this.request<void>('/finalize-signin', {
+  async finalizeBrowser(browserId: string, pageId: string): Promise<void> {
+    return this.request<void>('/finalize-browser', {
       method: 'POST',
-      body: JSON.stringify({ signin_id: signinId }),
+      body: JSON.stringify({ browser_id: browserId, page_id: pageId }),
     });
   }
 }
