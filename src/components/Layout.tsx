@@ -9,11 +9,7 @@ export function Layout() {
         <div className="max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center h-16">
             <div className="flex items-center">
-              <img
-                src={pageTurnerLogo}
-                alt="PageTurner"
-                className="h-8"
-              />
+              <img src={pageTurnerLogo} alt="PageTurner" className="h-8" />
             </div>
           </div>
         </div>
