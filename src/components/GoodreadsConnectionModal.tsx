@@ -29,11 +29,6 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
   const startedBrowserPageRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!bookListData.html) return;
-    callbacksRef.current.onProgressStep?.(2);
-  }, [bookListData.html]);
-
-  useEffect(() => {
     const browserId = bookListData.browserId;
     const pageId = bookListData.pageId;
     if (!browserId || !pageId) return;
@@ -55,7 +50,7 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
             if (pollResult?.status === 'SUCCESS') {
               break;
             }
-            await new Promise((resolve) => setTimeout(resolve, 5000));
+            await new Promise((resolve) => setTimeout(resolve, 3000));
           } catch (error) {
             if (isStale()) return;
             Sentry.captureException(error, { tags: SENTRY_TAGS });
@@ -96,7 +91,8 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
     };
   }, [bookListData.browserId, bookListData.pageId]);
 
-  const iframeContent = bookListData.html;
+  const { browserId, pageId } = bookListData;
+  if (!browserId || !pageId) return;
 
   return (
     <Modal
@@ -114,7 +110,7 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
     >
       <div className="relative pt-5">
         <iframe
-          srcDoc={iframeContent}
+          src={`/api/dpage/${browserId}/${pageId}`}
           sandbox="allow-same-origin allow-scripts allow-forms"
           className="w-full h-[380px] rounded-xl border border-gray-200"
         />
