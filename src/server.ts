@@ -40,6 +40,22 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+const SPINNER_HTML = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Loading</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div>
+      <span class="spinner" aria-label="Loading" style="border-top-color: #333"></span>
+      <span>Loading...</span>
+    </div>
+  </body>
+</html>`;
+
 function formatDistilledPage(
   html: string,
   sessionId: string,
@@ -61,19 +77,7 @@ function formatDistilledPage(
 
   const form = document.createElement('form');
   form.setAttribute('method', 'POST');
-  form.setAttribute('action', '/api/get-book-list');
-
-  const idInput = document.createElement('input');
-  idInput.setAttribute('type', 'hidden');
-  idInput.setAttribute('name', 'id');
-  idInput.setAttribute('value', sessionId);
-  form.appendChild(idInput);
-
-  const pageIdInput = document.createElement('input');
-  pageIdInput.setAttribute('type', 'hidden');
-  pageIdInput.setAttribute('name', 'pageId');
-  pageIdInput.setAttribute('value', pageId);
-  form.appendChild(pageIdInput);
+  form.setAttribute('action', `/api/dpage/${sessionId}/${pageId}`);
 
   const body = document.body;
   while (body.firstChild) {
@@ -180,75 +184,98 @@ async function initiateDistill(
 }
 
 app.post('/api/get-book-list', async (req, res) => {
-  const body = (req.body ?? {}) as Record<string, unknown>;
-
-  let sessionId: string | undefined;
-  let pageId: string | undefined;
-  const fields: Record<string, string> = {};
-
-  for (const [key, value] of Object.entries(body)) {
-    if (value === undefined || value === null) continue;
-    const stringValue = typeof value === 'string' ? value : String(value);
-    if (key === 'id' || key === 'sessionId') {
-      sessionId = stringValue;
-    } else if (key === 'pageId') {
-      pageId = stringValue;
-    } else {
-      fields[key] = stringValue;
-    }
-  }
-
-  if (!sessionId) {
-    sessionId = req.sessionID;
-  }
-
-  if (!sessionId) {
-    return res.status(503).send();
-  }
-
-  Logger.info('get-book-list resolved ids', { sessionId, pageId });
+  const sessionId = req.sessionID!;
 
   try {
-    let browserId = sessionId;
-    let resolvedPageId: string;
+    const headers = await getImportantHeaders(req);
+    const { browserId, pageId } = await prepareNewBrowser(sessionId, headers);
+    await navigatePage(browserId, pageId, GOODREADS_REVIEW_LIST_URL);
 
-    if (!pageId) {
-      const headers = await getImportantHeaders(req);
-      const prepared = await prepareNewBrowser(sessionId, headers);
-      browserId = prepared.browserId;
-      resolvedPageId = prepared.pageId;
-      await navigatePage(browserId, resolvedPageId, GOODREADS_REVIEW_LIST_URL);
-    } else {
-      resolvedPageId = pageId;
+    const { html } = await initiateDistill(browserId, pageId);
+    if (!html) {
+      return res.status(500).send();
     }
-
-    const { json, html } = await initiateDistill(
+    const responseData = {
       browserId,
-      resolvedPageId,
-      fields
-    );
-
-    const responseData: Record<string, unknown> = {
-      browserId,
-      pageId: resolvedPageId,
+      pageId,
+      html: formatDistilledPage(html, sessionId, pageId),
     };
-    if (json !== undefined) {
-      responseData.json = json;
-    }
-    if (html) {
-      responseData.html = formatDistilledPage(
-        html,
-        req.sessionID,
-        resolvedPageId
-      );
-    }
-
     return res.json({
       success: true,
       data: responseData,
     });
   } catch (error) {
-    Logger.error('get-book-list handler failed', error as Error, { sessionId, pageId });
+    Logger.error('get-book-list handler failed', error as Error, { sessionId });
+    return res.status(500).send();
+  }
+});
+
+// Since the browser can't redirect from GET to POST,
+// use an auto-submit form to do that.
+function redirect(action: string): string {
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <link rel="stylesheet" href="/style.css" />
+    </head>
+    <body>
+      <form id="redirect" action="${action}" method="post">
+      </form>
+      <div>
+        <span class="spinner" aria-label="Loading" style="border-top-color: #333"></span>
+        <span>Loading...</span>
+      </div>
+      <script>setTimeout(() => document.getElementById('redirect').submit(), 5000);</script>
+    </body>
+    </html>`;
+}
+
+app.get('/api/dpage/:browserId/:pageId', (req, res) => {
+  const { browserId, pageId } = req.params;
+  if (!browserId || !pageId) {
+    return res.status(503).send();
+  }
+  return res
+    .type('text/html')
+    .send(redirect(`/api/dpage/${browserId}/${pageId}`));
+});
+
+app.post('/api/dpage/:browserId/:pageId', async (req, res) => {
+  const browserId = req.params.browserId;
+  const pageId = req.params.pageId;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const fields: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined || value === null) continue;
+    fields[key] = typeof value === 'string' ? value : String(value);
+  }
+
+  if (!browserId || !pageId) {
+    return res.status(503).send();
+  }
+
+  try {
+    const { json, html } = await initiateDistill(browserId, pageId, fields);
+
+    if (html) {
+      const formattedHtml = formatDistilledPage(html, req.sessionID, pageId);
+      return res.type('text/html').send(formattedHtml);
+    }
+
+    if (json) {
+      // The data is ready, show the loading spinner until
+      // poll-browser grabs it
+      Logger.info('Distillation completed. Data is available!', { json });
+      return res.type('text/html').send(SPINNER_HTML);
+    }
+
+    return res.status(500).send();
+  } catch (error) {
+    Logger.error('dpage handler failed', error as Error, { browserId, pageId });
     return res.status(500).send();
   }
 });

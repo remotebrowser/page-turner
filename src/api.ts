@@ -9,8 +9,6 @@ type ApiResponse<T> = {
 };
 
 export type GetBookListResponse = {
-  json?: unknown[];
-  html?: string;
   browserId?: string;
   pageId?: string;
 };
