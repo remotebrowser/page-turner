@@ -11,6 +11,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { BrandConfig } from './modules/Config';
 import { settings } from './server/config.js';
+import { trace } from '@opentelemetry/api';
 import './server/instrument.js';
 import { getClientIp, getLocation } from './server/locationService.js';
 import {
@@ -186,9 +187,14 @@ async function initiateDistill(
 app.post('/api/get-book-list', async (req, res) => {
   const sessionId = req.sessionID!;
 
+  const span = trace.getActiveSpan();
+  span?.updateName('POST /api/get-book-list');
+  span?.setAttribute('pageturner.browser_id', sessionId);
+
   try {
     const headers = await getImportantHeaders(req);
     const { browserId, pageId } = await prepareNewBrowser(sessionId, headers);
+    span?.setAttribute('pageturner.page_id', pageId);
     await navigatePage(browserId, pageId, GOODREADS_REVIEW_LIST_URL);
 
     const { html } = await initiateDistill(browserId, pageId);
@@ -238,6 +244,12 @@ app.get('/api/dpage/:browserId/:pageId', (req, res) => {
   if (!browserId || !pageId) {
     return res.status(503).send();
   }
+
+  const span = trace.getActiveSpan();
+  span?.updateName('GET /api/dpage (will redirect)');
+  span?.setAttribute('pageturner.browser_id', browserId);
+  span?.setAttribute('pageturner.page_id', pageId);
+
   return res
     .type('text/html')
     .send(redirect(`/api/dpage/${browserId}/${pageId}`));
@@ -257,6 +269,12 @@ app.post('/api/dpage/:browserId/:pageId', async (req, res) => {
   if (!browserId || !pageId) {
     return res.status(503).send();
   }
+
+  const span = trace.getActiveSpan();
+  span?.updateName('POST /api/dpage');
+  span?.setAttribute('pageturner.browser_id', browserId);
+  span?.setAttribute('pageturner.page_id', pageId);
+  span?.setAttribute('pageturner.fields_length', Object.keys(fields).length);
 
   try {
     const { json, html } = await initiateDistill(browserId, pageId, fields);
@@ -290,6 +308,11 @@ app.post('/api/poll-browser', async (req, res) => {
         error: 'browser_id and page_id are required',
       });
     }
+
+    const span = trace.getActiveSpan();
+    span?.updateName('POST /api/poll-browser');
+    span?.setAttribute('pageturner.browser_id', browser_id);
+    span?.setAttribute('pageturner.page_id', page_id);
 
     let bookListContent: unknown[] = [];
     let status = 'PENDING';
@@ -330,6 +353,8 @@ app.post('/api/poll-browser', async (req, res) => {
 });
 
 app.post('/api/finalize-browser', async (req, res) => {
+  const span = trace.getActiveSpan();
+  span?.updateName('POST /api/finalize-browser');
   try {
     const { browser_id, page_id } = req.body;
 
@@ -340,6 +365,7 @@ app.post('/api/finalize-browser', async (req, res) => {
       });
     }
 
+    span?.setAttribute('pageturner.browser_id', browser_id);
     Logger.info('Browser finalized', { browser_id, page_id });
 
     res.json({
