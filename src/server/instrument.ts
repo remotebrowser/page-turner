@@ -80,10 +80,10 @@ if (settings.SENTRY_DSN) {
       if (tags?.signin_id) {
         event.tags = { ...event.tags, signin_id: tags.signin_id as string };
       }
-      if (tags?.mcp_session_id) {
+      if (tags?.session_id) {
         event.tags = {
           ...event.tags,
-          mcp_session_id: tags.mcp_session_id as string,
+          session_id: tags.session_id as string,
         };
       }
 
@@ -107,10 +107,10 @@ if (settings.SENTRY_DSN) {
       if (tags?.signin_id) {
         event.tags = { ...event.tags, signin_id: tags.signin_id as string };
       }
-      if (tags?.mcp_session_id) {
+      if (tags?.session_id) {
         event.tags = {
           ...event.tags,
-          mcp_session_id: tags.mcp_session_id as string,
+          session_id: tags.session_id as string,
         };
       }
 
