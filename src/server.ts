@@ -115,7 +115,7 @@ app.use(express.urlencoded({ extended: true }));
 function readSessionIdFromCookie(req: express.Request): string | undefined {
   const cookieHeader = req.headers['cookie'];
   if (!cookieHeader) return undefined;
-  const match = cookieHeader.match(/(?:^|; )mcp-session-id=([^;]+)/);
+  const match = cookieHeader.match(/(?:^|; )session-id=([^;]+)/);
   return match ? decodeURIComponent(match[1]) : undefined;
 }
 
@@ -124,17 +124,17 @@ function requireSession(
   res: express.Response,
   next: express.NextFunction
 ): void {
-  const headerValue = req.headers['x-mcp-session-id'];
+  const headerValue = req.headers['x-session-id'];
   const headerSessionId = Array.isArray(headerValue)
     ? headerValue[0]
     : headerValue;
   const sessionId = headerSessionId || readSessionIdFromCookie(req);
   if (!sessionId) {
-    res.status(400).json({ error: 'mcp-session-id is required' });
+    res.status(400).json({ error: 'session-id is required' });
     return;
   }
   req.sessionID = sessionId;
-  Sentry.getIsolationScope().setTag('mcp_session_id', sessionId);
+  Sentry.getIsolationScope().setTag('session_id', sessionId);
   next();
 }
 
