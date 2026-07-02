@@ -27,12 +27,11 @@ function toFetchHeaders(
 }
 
 export async function prepareNewBrowser(
-  browserId: string,
   headers: Record<string, string | undefined> = {}
 ): Promise<{ browserId: string; pageId: string }> {
   const fetchHeaders = toFetchHeaders(headers);
 
-  const createRes = await fetch(buildUrl(`/api/v1/browsers/${browserId}`), {
+  const createRes = await fetch(buildUrl(`/api/v1/browsers`), {
     method: 'POST',
     headers: fetchHeaders,
   });
@@ -40,9 +39,12 @@ export async function prepareNewBrowser(
     const errorBody = await createRes.text().catch(() => '');
     const detail = errorBody ? `: ${errorBody}` : '';
     throw new Error(
-      `Failed to create browser ${browserId}: HTTP ${createRes.status}${detail}`
+      `Failed to create browser: HTTP ${createRes.status}${detail}`
     );
   }
+  const { browser_id: browserId } = (await createRes.json()) as {
+    browser_id: string;
+  };
 
   const deadline = Date.now() + REMOTEBROWSER_RETRY_TIMEOUT_MS;
   let pageId: string | undefined;

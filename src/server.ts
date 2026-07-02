@@ -59,7 +59,7 @@ const SPINNER_HTML = `<!doctype html>
 
 function formatDistilledPage(
   html: string,
-  sessionId: string,
+  browserId: string,
   pageId: string
 ): string {
   const { document } = parseHTML(html);
@@ -78,7 +78,7 @@ function formatDistilledPage(
 
   const form = document.createElement('form');
   form.setAttribute('method', 'POST');
-  form.setAttribute('action', `/api/dpage/${sessionId}/${pageId}`);
+  form.setAttribute('action', `/api/dpage/${browserId}/${pageId}`);
 
   const body = document.body;
   while (body.firstChild) {
@@ -157,12 +157,10 @@ app.get('/health', (req, res) => {
 const GOODREADS_REVIEW_LIST_URL = 'https://www.goodreads.com/review/list';
 
 async function initiateDistill(
-  sessionId: string,
+  browserId: string,
   pageId: string,
   fields: Record<string, string> = {}
 ): Promise<{ json?: unknown[]; html?: string }> {
-  const browserId = sessionId;
-
   await distillPage(browserId, pageId, fields);
 
   try {
@@ -189,11 +187,11 @@ app.post('/api/get-book-list', async (req, res) => {
 
   const span = trace.getActiveSpan();
   span?.updateName('POST /api/get-book-list');
-  span?.setAttribute('pageturner.browser_id', sessionId);
 
   try {
     const headers = await getImportantHeaders(req);
-    const { browserId, pageId } = await prepareNewBrowser(sessionId, headers);
+    const { browserId, pageId } = await prepareNewBrowser(headers);
+    span?.setAttribute('pageturner.browser_id', browserId);
     span?.setAttribute('pageturner.page_id', pageId);
     await navigatePage(browserId, pageId, GOODREADS_REVIEW_LIST_URL);
 
@@ -204,7 +202,7 @@ app.post('/api/get-book-list', async (req, res) => {
     const responseData = {
       browserId,
       pageId,
-      html: formatDistilledPage(html, sessionId, pageId),
+      html: formatDistilledPage(html, browserId, pageId),
     };
     return res.json({
       success: true,
@@ -280,7 +278,7 @@ app.post('/api/dpage/:browserId/:pageId', async (req, res) => {
     const { json, html } = await initiateDistill(browserId, pageId, fields);
 
     if (html) {
-      const formattedHtml = formatDistilledPage(html, req.sessionID, pageId);
+      const formattedHtml = formatDistilledPage(html, browserId, pageId);
       return res.type('text/html').send(formattedHtml);
     }
 
