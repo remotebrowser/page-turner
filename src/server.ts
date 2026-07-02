@@ -15,6 +15,7 @@ import { trace } from '@opentelemetry/api';
 import './server/instrument.js';
 import { getClientIp, getLocation } from './server/locationService.js';
 import {
+  deleteBrowser,
   distillPage,
   getDistilledHtml,
   getDistilledJson,
@@ -364,6 +365,7 @@ app.post('/api/finalize-browser', async (req, res) => {
     }
 
     span?.setAttribute('pageturner.browser_id', browser_id);
+    await deleteBrowser(browser_id);
     Logger.info('Browser finalized', { browser_id, page_id });
 
     res.json({
