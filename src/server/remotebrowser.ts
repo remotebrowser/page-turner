@@ -181,9 +181,17 @@ export async function getDistilledHtml(
 
 export async function deleteBrowser(browserId: string): Promise<void> {
   try {
-    await fetch(buildUrl(`/api/v1/browsers/${browserId}`), {
+    const res = await fetch(buildUrl(`/api/v1/browsers/${browserId}`), {
       method: 'DELETE',
     });
+    if (!res.ok) {
+      const errorBody = await res.text().catch(() => '');
+      Logger.warn('Failed to delete browser', {
+        browserId,
+        status: res.status,
+        body: errorBody,
+      });
+    }
   } catch (error) {
     Logger.warn('Failed to delete browser', {
       browserId,
