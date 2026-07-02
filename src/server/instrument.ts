@@ -1,5 +1,6 @@
 import * as logfire from '@pydantic/logfire-node';
 import * as Sentry from '@sentry/node';
+import { ExpressLayerType } from '@opentelemetry/instrumentation-express';
 import { Logger } from '../utils/logger.js';
 import { settings } from './config.js';
 
@@ -13,6 +14,17 @@ if (settings.LOGFIRE_TOKEN) {
     distributedTracing: true,
     otelScope: 'logfire', // Set the OpenTelemetry scope name
     scrubbing: false,
+    nodeAutoInstrumentations: {
+      '@opentelemetry/instrumentation-http': {
+        ignoreIncomingRequestHook: (request) => request.url === '/health',
+      },
+      '@opentelemetry/instrumentation-net': {
+        enabled: false,
+      },
+      '@opentelemetry/instrumentation-express': {
+        ignoreLayersType: [ExpressLayerType.MIDDLEWARE],
+      },
+    },
   });
 } else {
   console.log('⚠️  LOGFIRE_TOKEN not set - Logfire disabled');
