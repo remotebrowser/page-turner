@@ -13,7 +13,6 @@ import { BrandConfig } from './modules/Config';
 import { settings } from './server/config.js';
 import { trace } from '@opentelemetry/api';
 import './server/instrument.js';
-import { getClientIp, getLocation } from './server/locationService.js';
 import {
   deleteBrowser,
   distillPage,
@@ -99,6 +98,15 @@ function normalizeHeaderValue(
 ): string | undefined {
   if (Array.isArray(value)) return value.join(', ');
   return value;
+}
+
+function getClientIp(request: express.Request): string {
+  const xff = request.headers['x-forwarded-for'];
+  if (xff && typeof xff === 'string') {
+    return xff.split(',')[0].trim();
+  }
+
+  return request.ip || request.connection.remoteAddress || 'unknown';
 }
 
 async function getImportantHeaders(req: express.Request) {
@@ -417,14 +425,6 @@ proxyPaths.forEach((path) => {
 app.use('/api', async (req, res, next) => {
   bodyParser.json()(req, res, async (err) => {
     if (err) return next(err);
-
-    if (req.method === 'POST') {
-      if (!req.body) {
-        req.body = {};
-      }
-      const ipAddress = getClientIp(req);
-      req.body.location = await getLocation(ipAddress);
-    }
 
     createProxy('/api')(req, res, next);
   });
