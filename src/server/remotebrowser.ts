@@ -5,7 +5,7 @@ const REMOTEBROWSER_RETRY_TIMEOUT_MS = 30_000;
 const REMOTEBROWSER_RETRY_INTERVAL_MS = 1_000;
 
 function baseUrl(): string {
-  return settings.GETGATHER_URL.replace(/\/+$/, '');
+  return settings.REMOTEBROWSER_URL.replace(/\/+$/, '');
 }
 
 function buildUrl(path: string): string {

@@ -32,7 +32,7 @@ Page Turner is a web app that helps you connect and import your reading lists fr
 Create a `.env` file in the project root with the following variables:
 
 ```env
-GETGATHER_URL=http://localhost:23456
+REMOTEBROWSER_URL=http://localhost:23456
 
 # Sentry Configuration (optional)
 SENTRY_DSN=https://your-dsn@sentry.io/project-id
