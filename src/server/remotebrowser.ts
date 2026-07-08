@@ -1,4 +1,4 @@
-import { Logger } from '../utils/logger.js';
+import { consola } from 'consola';
 import { settings } from './config.js';
 
 const REMOTEBROWSER_RETRY_TIMEOUT_MS = 30_000;
@@ -61,7 +61,7 @@ export async function prepareNewBrowser(
         }
       }
     } catch (error) {
-      Logger.debug('Fetching pages failed, retrying', {
+      consola.debug('Fetching pages failed, retrying', {
         browserId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -186,14 +186,14 @@ export async function deleteBrowser(browserId: string): Promise<void> {
     });
     if (!res.ok) {
       const errorBody = await res.text().catch(() => '');
-      Logger.warn('Failed to delete browser', {
+      consola.warn('Failed to delete browser', {
         browserId,
         status: res.status,
         body: errorBody,
       });
     }
   } catch (error) {
-    Logger.warn('Failed to delete browser', {
+    consola.warn('Failed to delete browser', {
       browserId,
       error: error instanceof Error ? error.message : String(error),
     });
