@@ -22,7 +22,7 @@ import {
   navigatePage,
   prepareNewBrowser,
 } from './server/remotebrowser.js';
-import { Logger } from './utils/logger.js';
+import { consola } from 'consola';
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -170,7 +170,7 @@ async function initiateDistill(
       return { json: distilled };
     }
   } catch (jsonError) {
-    Logger.info(
+    consola.warn(
       'Failed to obtain distilled JSON, falling back to distilled HTML',
       {
         error:
@@ -210,7 +210,9 @@ app.post('/api/get-book-list', async (req, res) => {
       data: responseData,
     });
   } catch (error) {
-    Logger.error('get-book-list handler failed', error as Error, { sessionId });
+    consola.error('get-book-list handler failed', error as Error, {
+      sessionId,
+    });
     return res.status(500).send();
   }
 });
@@ -286,13 +288,16 @@ app.post('/api/dpage/:browserId/:pageId', async (req, res) => {
     if (json) {
       // The data is ready, show the loading spinner until
       // poll-browser grabs it
-      Logger.info('Distillation completed. Data is available!', { json });
+      consola.success('Distillation completed. Data is available!', { json });
       return res.type('text/html').send(SPINNER_HTML);
     }
 
     return res.status(500).send();
   } catch (error) {
-    Logger.error('dpage handler failed', error as Error, { browserId, pageId });
+    consola.error('dpage handler failed', error as Error, {
+      browserId,
+      pageId,
+    });
     return res.status(500).send();
   }
 });
@@ -325,7 +330,7 @@ app.post('/api/poll-browser', async (req, res) => {
         }
       }
     } catch (pollError) {
-      Logger.debug('Browser poll did not yield JSON, returning PENDING', {
+      consola.debug('Browser poll did not yield JSON, returning PENDING', {
         browser_id,
         page_id,
         error:
@@ -341,7 +346,7 @@ app.post('/api/poll-browser', async (req, res) => {
       },
     });
   } catch (error) {
-    Logger.error('Poll browser error:', error as Error, {
+    consola.error('Poll browser error:', error as Error, {
       req: req.toString(),
     });
     res.status(500).json({
@@ -366,13 +371,13 @@ app.post('/api/finalize-browser', async (req, res) => {
 
     span?.setAttribute('pageturner.browser_id', browser_id);
     await deleteBrowser(browser_id);
-    Logger.info('Browser finalized', { browser_id, page_id });
+    consola.info('Browser finalized', { browser_id, page_id });
 
     res.json({
       success: true,
     });
   } catch (error) {
-    Logger.error('Finalize browser error:', error as Error, {
+    consola.error('Finalize browser error:', error as Error, {
       req: req.toString(),
     });
     res.status(500).json({
@@ -393,7 +398,7 @@ const createProxy = (path: string) =>
         req: express.Request,
         res: express.Response | Socket
       ) => {
-        Logger.error('Proxy error:', err, { req: req.toString() });
+        consola.error('Proxy error:', err, { req: req.toString() });
         if ('status' in res) {
           res.status(500).send('Proxy error occurred');
         }
@@ -441,7 +446,7 @@ app.use(
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     next: express.NextFunction
   ) => {
-    Logger.error('Unhandled server error', err, {
+    consola.error('Unhandled server error', err, {
       component: 'server',
       operation: 'fallback-error-handler',
       url: req.url,
@@ -477,16 +482,16 @@ if (settings.NODE_ENV === 'production') {
 async function startServer() {
   try {
     app.listen(PORT, () => {
-      Logger.info(`Server running on port ${PORT}`);
+      consola.success(`Server running on port ${PORT}`);
       if (settings.NODE_ENV === 'production') {
         app.set('trust proxy', 1);
-        Logger.info('Serving static files from dist/');
+        consola.info('Serving static files from dist/');
       } else {
-        Logger.info('API only mode - use Vite dev server for frontend');
+        consola.info('API only mode - use Vite dev server for frontend');
       }
     });
   } catch (error) {
-    Logger.error('Failed to start server:', error as Error);
+    consola.error('Failed to start server:', error as Error);
     process.exit(1);
   }
 }

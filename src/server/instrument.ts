@@ -1,12 +1,12 @@
 import * as logfire from '@pydantic/logfire-node';
 import * as Sentry from '@sentry/node';
 import { ExpressLayerType } from '@opentelemetry/instrumentation-express';
-import { Logger } from '../utils/logger.js';
+import { consola, type ConsolaReporter, type LogObject } from 'consola';
 import { settings } from './config.js';
 
 // Initialize Logfire first to avoid conflict with Sentry
 if (settings.LOGFIRE_TOKEN) {
-  Logger.info('Initializing Logfire');
+  consola.start('Initializing Logfire');
   logfire.configure({
     token: settings.LOGFIRE_TOKEN,
     serviceName: 'page-turner',
@@ -117,4 +117,37 @@ if (settings.SENTRY_DSN) {
       return event;
     },
   });
+
+  const sentryReporter: ConsolaReporter = {
+    log(logObj: LogObject) {
+      // consola error level is 0
+      if (logObj.level !== 0) return;
+      const args = logObj.args;
+      const message =
+        args.find((a): a is string => typeof a === 'string') ?? '';
+      const error = args.find((a): a is Error => a instanceof Error);
+      const context = args.find(
+        (a): a is Record<string, unknown> =>
+          typeof a === 'object' && a !== null && !(a instanceof Error)
+      );
+
+      if (error) {
+        Sentry.captureException(error, {
+          tags: {
+            component: context?.component as string | undefined,
+            operation: context?.operation as string | undefined,
+            brand_id: context?.brandId as string | undefined,
+          },
+          extra: {
+            ...context,
+            originalMessage: message,
+          },
+        });
+      } else {
+        Sentry.captureMessage(message, 'error');
+      }
+    },
+  };
+
+  consola.addReporter(sentryReporter);
 }
