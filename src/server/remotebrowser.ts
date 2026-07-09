@@ -1,8 +1,21 @@
 import { consola } from 'consola';
+import { promises as fs } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { settings } from './config.js';
 
 const REMOTEBROWSER_RETRY_TIMEOUT_MS = 30_000;
 const REMOTEBROWSER_RETRY_INTERVAL_MS = 1_000;
+
+const PATTERNS_DIR = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'patterns'
+);
+
+const SUPPORTED_PATTERN_EXTS = new Map<string, string>([
+  ['.html', 'html'],
+  ['.json', 'json'],
+]);
 
 function baseUrl(): string {
   return settings.REMOTEBROWSER_URL.replace(/\/+$/, '');
@@ -103,11 +116,77 @@ export async function navigatePage(
   );
 }
 
+async function uploadPatterns(): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(PATTERNS_DIR);
+  } catch (error) {
+    consola.warn('Failed to read local patterns directory', {
+      dir: PATTERNS_DIR,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  const uploads = entries
+    .map((entry) => {
+      const ext = path.extname(entry);
+      const patternExt = SUPPORTED_PATTERN_EXTS.get(ext);
+      if (!patternExt) return null;
+      const name = path.basename(entry, ext);
+      return { name, ext: patternExt, file: path.join(PATTERNS_DIR, entry) };
+    })
+    .filter((u): u is { name: string; ext: string; file: string } => u !== null);
+
+  const results = await Promise.allSettled(
+    uploads.map(async ({ name, ext, file }) => {
+      const content = await fs.readFile(file, 'utf8');
+      const res = await fetch(
+        buildUrl(`/api/v1/patterns/${name}?ext=${ext}`),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content }),
+        }
+      );
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '');
+        throw new Error(
+          `Upload pattern ${name}.${ext} failed: HTTP ${res.status}${detail ? `: ${detail}` : ''}`
+        );
+      }
+    })
+  );
+
+  let failed = 0;
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status === 'rejected') {
+      failed++;
+      consola.warn('Pattern upload failed', {
+        pattern: uploads[i].name,
+        error:
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason),
+      });
+    }
+  }
+
+  const summary = `Patterns uploaded: ${results.length - failed}/${results.length} ok`;
+  if (failed === 0) {
+    consola.success(summary);
+  } else {
+    consola.error(summary);
+  }
+}
+
 export async function distillPage(
   browserId: string,
   pageId: string,
   fields?: Record<string, string>
 ): Promise<void> {
+  await uploadPatterns();
   const endpoint = `/api/v1/browsers/${browserId}/pages/${pageId}/distill`;
   const body = new URLSearchParams(fields ?? {}).toString();
   const deadline = Date.now() + REMOTEBROWSER_RETRY_TIMEOUT_MS;

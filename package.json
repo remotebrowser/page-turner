@@ -10,7 +10,7 @@
     "dev:server-only": "tsx watch src/server.ts",
     "build": "npm run build:client && npm run build:server",
     "build:client": "vite build",
-    "build:server": "tsc src/server.ts --outDir dist --module ESNext --target ES2022 --moduleResolution bundler --allowImportingTsExtensions false --skipLibCheck && cp -r src/config dist/",
+    "build:server": "tsc src/server.ts --outDir dist --module ESNext --target ES2022 --moduleResolution bundler --allowImportingTsExtensions false --skipLibCheck && cp -r src/config dist/ && cp -r src/server/patterns dist/server/patterns",
     "start": "NODE_ENV=production node --import ./dist/server/instrument.js dist/server.js",
     "preview": "npm run build && npm start",
     "format": "prettier --write .",
