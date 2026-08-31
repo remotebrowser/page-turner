@@ -9,18 +9,27 @@ import { createRequire } from 'module';
 import { Socket } from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { BrandConfig } from './modules/Config';
 import { settings } from './server/config.js';
 import { trace } from '@opentelemetry/api';
 import './server/instrument.js';
 import {
-  deleteBrowser,
-  distillPage,
-  getDistilledHtml,
-  getDistilledJson,
+  createRemoteBrowser,
+  destroyRemoteBrowser,
+  getPage,
   navigatePage,
-  prepareNewBrowser,
+  connectRemoteBrowser,
 } from './server/remotebrowser.js';
+import type { Browser, Page } from 'playwright';
+import {
+  autoclick,
+  convert,
+  distill,
+  parse,
+  patternsDir,
+} from './server/distill.js';
+import type { PatternEntry } from './server/distill.js';
 import { consola } from 'consola';
 
 declare module 'express-serve-static-core' {
@@ -37,6 +46,21 @@ const goodreadsConfig = goodreads as BrandConfig;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const patterns: PatternEntry[] = readdirSync(patternsDir)
+  .map((file) => path.join(patternsDir, file))
+  .filter((name) => {
+    const st = statSync(name);
+    return st && !st.isDirectory();
+  })
+  .filter((name) => name.endsWith('.html'))
+  .map((name) => {
+    const content = readFileSync(name, 'utf-8');
+    const pattern = parse(content);
+    return { name, pattern };
+  });
+
+consola.info(`Loaded ${patterns.length} distillation patterns`);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -56,6 +80,9 @@ const SPINNER_HTML = `<!doctype html>
     </div>
   </body>
 </html>`;
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 function formatDistilledPage(
   html: string,
@@ -110,10 +137,14 @@ function getClientIp(request: express.Request): string {
 }
 
 async function getImportantHeaders(req: express.Request) {
-  return {
+  const headers: Record<string, string> = {
     'x-origin-ip': getClientIp(req),
-    'user-agent': normalizeHeaderValue(req.headers['user-agent']),
   };
+  const ua = normalizeHeaderValue(req.headers['user-agent']);
+  if (ua) {
+    headers['user-agent'] = ua;
+  }
+  return headers;
 }
 
 // Middleware
@@ -165,30 +196,39 @@ app.get('/health', (req, res) => {
 
 const GOODREADS_REVIEW_LIST_URL = 'https://www.goodreads.com/review/list';
 
-async function initiateDistill(
-  browserId: string,
-  pageId: string,
-  fields: Record<string, string> = {}
-): Promise<{ json?: unknown[]; html?: string }> {
-  await distillPage(browserId, pageId, fields);
+const distillationStore = new Map<string, Record<string, string>[]>();
 
-  try {
-    const distilled = await getDistilledJson<unknown[]>(browserId, pageId);
-    if (Array.isArray(distilled) && distilled.length > 0) {
-      return { json: distilled };
-    }
-  } catch (jsonError) {
-    consola.warn(
-      'Failed to obtain distilled JSON, falling back to distilled HTML',
-      {
-        error:
-          jsonError instanceof Error ? jsonError.message : String(jsonError),
+async function initiateDistill(
+  hostname: string,
+  page: Page,
+  fields: Record<string, string> = {}
+): Promise<{ json?: Record<string, string>[]; html?: string }> {
+  // If fields are provided, fill them into form inputs on the page before distilling
+  if (Object.keys(fields).length > 0) {
+    for (const [key, value] of Object.entries(fields)) {
+      try {
+        await page.fill(`[name="${key}"]`, value);
+      } catch {
+        consola.warn(`Could not fill field '${key}' on the page`);
       }
-    );
+    }
   }
 
-  const html = await getDistilledHtml(browserId, pageId);
-  return { html };
+  const match = await distill(hostname, patterns, page);
+  console.log('match is', { match });
+  if (!match) {
+    // Fallback: return the raw page HTML when no pattern matches
+    const html = await page.content();
+    return { html };
+  }
+
+  const converted = await convert(match.distilled, patternsDir);
+  if (converted.length > 0) {
+    return { json: converted };
+  }
+
+  // Return distilled HTML when conversion does not produce rows
+  return { html: match.distilled };
 }
 
 app.post('/api/get-book-list', async (req, res) => {
@@ -197,21 +237,34 @@ app.post('/api/get-book-list', async (req, res) => {
   const span = trace.getActiveSpan();
   span?.updateName('POST /api/get-book-list');
 
+  let browserId: string | undefined;
+  let browser: Browser | undefined;
+
   try {
     const headers = await getImportantHeaders(req);
-    const { browserId, pageId } = await prepareNewBrowser(headers);
-    span?.setAttribute('pageturner.browser_id', browserId);
-    span?.setAttribute('pageturner.page_id', pageId);
-    await navigatePage(browserId, pageId, GOODREADS_REVIEW_LIST_URL);
+    const hostname = new URL(GOODREADS_REVIEW_LIST_URL).hostname;
 
-    const { html } = await initiateDistill(browserId, pageId);
+    consola.start('Creating remote browser');
+    browserId = await createRemoteBrowser(headers);
+    span?.setAttribute('pageturner.browser_id', browserId);
+
+    browser = await connectRemoteBrowser(browserId);
+    const { page, targetId } = await getPage(browser);
+
+    consola.start('Navigating to Goodreads', { browserId });
+    await navigatePage(page, GOODREADS_REVIEW_LIST_URL);
+
+    span?.setAttribute('pageturner.page_id', targetId);
+
+    const hostnameToUse = hostname;
+    const { html } = await initiateDistill(hostnameToUse, page);
     if (!html) {
       return res.status(500).send();
     }
     const responseData = {
       browserId,
-      pageId,
-      html: formatDistilledPage(html, browserId, pageId),
+      pageId: targetId,
+      html: formatDistilledPage(html, browserId, targetId),
     };
     return res.json({
       success: true,
@@ -222,6 +275,15 @@ app.post('/api/get-book-list', async (req, res) => {
       sessionId,
     });
     return res.status(500).send();
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+        consola.info('Playwright browser disconnected', { browserId });
+      } catch (e) {
+        consola.error('Error closing Playwright browser:', e as Error);
+      }
+    }
   }
 });
 
@@ -285,28 +347,149 @@ app.post('/api/dpage/:browserId/:pageId', async (req, res) => {
   span?.setAttribute('pageturner.page_id', pageId);
   span?.setAttribute('pageturner.fields_length', Object.keys(fields).length);
 
+  let browser: Browser | undefined;
+
   try {
-    const { json, html } = await initiateDistill(browserId, pageId, fields);
+    browser = await connectRemoteBrowser(browserId);
+    const { page } = await getPage(browser, pageId);
 
-    if (html) {
-      const formattedHtml = formatDistilledPage(html, browserId, pageId);
-      return res.type('text/html').send(formattedHtml);
+    const hostname = new URL(GOODREADS_REVIEW_LIST_URL).hostname;
+
+    const TICK = 1000; // ms
+    const TIMEOUT = 15 * 1000; // ms
+    const max = TIMEOUT / TICK;
+
+    const current: { name: string | null; distilled: string | null } = {
+      name: null,
+      distilled: null,
+    };
+
+    for (let iteration = 0; iteration < max; iteration++) {
+      consola.log(`Iteration ${iteration + 1} of ${max}`);
+      await sleep(TICK);
+
+      const match = await distill(hostname, patterns, page);
+      if (!match) {
+        if (iteration === 0) {
+          const html = await page.content();
+          if (html) {
+            return res
+              .type('text/html')
+              .send(formatDistilledPage(html, browserId, pageId));
+          }
+        }
+        consola.warn('No matched pattern found');
+        continue;
+      }
+
+      const { distilled } = match;
+      if (distilled === current.distilled) {
+        consola.log('Still the same:', match.name);
+        continue;
+      }
+
+      current.name = match.name;
+      current.distilled = distilled;
+
+      // If the distilled content terminates, convert it to the final result
+      const converted = await convert(distilled, patternsDir);
+      if (converted.length > 0) {
+        // Store the result so poll-browser can pick it up
+        distillationStore.set(browserId, converted);
+        consola.success('Distillation completed. Data is available!', {
+          json: converted,
+        });
+        return res.type('text/html').send(SPINNER_HTML);
+      }
+
+      // Fill the submitted form fields into the page using the distilled inputs
+      const document = parse(distilled);
+      const names: string[] = [];
+      const inputs = Array.from(document.querySelectorAll('input'));
+      for (const input of inputs) {
+        const selector = input.getAttribute('rb-match');
+        const name = input.getAttribute('name') ?? '';
+        if (!selector) continue;
+
+        const type = input.getAttribute('type');
+        if (type === 'checkbox') {
+          if (!name) {
+            consola.warn('No name for the checkbox', selector);
+            continue;
+          }
+          const value = fields[name];
+          if (value && value.length > 0) {
+            consola.info(`Checking checkbox ${name}`);
+            await page.check(selector);
+          }
+          names.push(name);
+        } else if (type === 'radio') {
+          const value = fields[name];
+          if (!value || value.length === 0) {
+            consola.warn('No form data found for radio button group', name);
+            continue;
+          }
+          const radio = document.querySelector(
+            `input[type=radio][id="${value}"]`
+          );
+          if (!radio) {
+            consola.warn('No radio button found with id', value);
+            continue;
+          }
+          const radioSelector = radio.getAttribute('rb-match');
+          if (!radioSelector) continue;
+          consola.info(`Checking radio button ${name}=${value}`);
+          await page.check(radioSelector);
+          names.push(input.id || 'radio');
+        } else if (name) {
+          const value = fields[name];
+          if (value && value.length > 0) {
+            consola.info(`Using form data ${name}`);
+            names.push(name);
+            try {
+              await page.fill(selector, value);
+            } catch (err) {
+              consola.warn(`Could not fill field '${name}'`, err as Error);
+            }
+            delete fields[name];
+          } else {
+            consola.warn(`No form data found for ${name}`);
+          }
+        }
+      }
+
+      await autoclick(page, distilled, '[rb-autoclick]:not(button)');
+
+      const SUBMIT_BUTTON = 'button[rb-autoclick], button[type="submit"]';
+      if (document.querySelector(SUBMIT_BUTTON)) {
+        if (names.length > 0 && inputs.length === names.length) {
+          consola.log('Submitting form, all fields are filled...');
+          await autoclick(page, distilled, SUBMIT_BUTTON);
+          continue;
+        }
+        consola.warn('Not all form fields are filled');
+        return res
+          .type('text/html')
+          .send(formatDistilledPage(distilled, browserId, pageId));
+      }
     }
 
-    if (json) {
-      // The data is ready, show the loading spinner until
-      // poll-browser grabs it
-      consola.success('Distillation completed. Data is available!', { json });
-      return res.type('text/html').send(SPINNER_HTML);
-    }
-
-    return res.status(500).send();
+    return res.status(503).send();
   } catch (error) {
     consola.error('dpage handler failed', error as Error, {
       browserId,
       pageId,
     });
     return res.status(500).send();
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+        consola.info('Playwright browser disconnected', { browserId });
+      } catch (e) {
+        consola.error('Error closing Playwright browser:', e as Error);
+      }
+    }
   }
 });
 
@@ -326,25 +509,10 @@ app.post('/api/poll-browser', async (req, res) => {
     span?.setAttribute('pageturner.browser_id', browser_id);
     span?.setAttribute('pageturner.page_id', page_id);
 
-    let bookListContent: unknown[] = [];
-    let status = 'PENDING';
-    try {
-      const distilled = await getDistilledJson<unknown[]>(browser_id, page_id);
-      if (Array.isArray(distilled) && distilled.length > 0) {
-        const transformed = distilled;
-        if (transformed.length > 0) {
-          bookListContent = transformed;
-          status = 'SUCCESS';
-        }
-      }
-    } catch (pollError) {
-      consola.debug('Browser poll did not yield JSON, returning PENDING', {
-        browser_id,
-        page_id,
-        error:
-          pollError instanceof Error ? pollError.message : String(pollError),
-      });
-    }
+    // Check the in-memory store for distillation results
+    const stored = distillationStore.get(browser_id);
+    const bookListContent = stored ?? [];
+    const status = bookListContent.length > 0 ? 'SUCCESS' : 'PENDING';
 
     res.json({
       success: true,
@@ -378,7 +546,8 @@ app.post('/api/finalize-browser', async (req, res) => {
     }
 
     span?.setAttribute('pageturner.browser_id', browser_id);
-    await deleteBrowser(browser_id);
+    await destroyRemoteBrowser(browser_id);
+    distillationStore.delete(browser_id);
     consola.info('Browser finalized', { browser_id, page_id });
 
     res.json({
