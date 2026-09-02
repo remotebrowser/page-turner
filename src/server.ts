@@ -1,19 +1,21 @@
+import './server/instrument.js';
+
 import * as Sentry from '@sentry/node';
-import bodyParser from 'body-parser';
-import cors from 'cors';
+import { Hono } from 'hono';
+import type { Context, Next } from 'hono';
+import { cors } from 'hono/cors';
+import { getCookie } from 'hono/cookie';
+import { serve } from '@hono/node-server';
+import { serveStatic } from '@hono/node-server/serve-static';
 import dotenv from 'dotenv';
-import express from 'express';
-import { createProxyMiddleware, fixRequestBody } from 'http-proxy-middleware';
 import { parseHTML } from 'linkedom';
 import { createRequire } from 'module';
-import { Socket } from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { BrandConfig } from './modules/Config';
 import { settings } from './server/config.js';
 import { trace } from '@opentelemetry/api';
-import './server/instrument.js';
 import {
   createRemoteBrowser,
   destroyRemoteBrowser,
@@ -32,11 +34,9 @@ import {
 import type { PatternEntry } from './server/distill.js';
 import { consola } from 'consola';
 
-declare module 'express-serve-static-core' {
-  interface Request {
-    sessionID: string;
-  }
-}
+type Variables = {
+  sessionID: string;
+};
 
 dotenv.config();
 
@@ -62,7 +62,7 @@ const patterns: PatternEntry[] = readdirSync(patternsDir)
 
 consola.info(`Loaded ${patterns.length} distillation patterns`);
 
-const app = express();
+const app = new Hono<{ Variables: Variables }>();
 const PORT = process.env.PORT || 3001;
 
 const SPINNER_HTML = `<!doctype html>
@@ -120,27 +120,19 @@ function formatDistilledPage(
   return `<!doctype html>${document.documentElement.outerHTML}`;
 }
 
-function normalizeHeaderValue(
-  value: string | string[] | undefined
-): string | undefined {
-  if (Array.isArray(value)) return value.join(', ');
-  return value;
-}
-
-function getClientIp(request: express.Request): string {
-  const xff = request.headers['x-forwarded-for'];
-  if (xff && typeof xff === 'string') {
+function getClientIp(c: Context): string {
+  const xff = c.req.header('x-forwarded-for');
+  if (xff) {
     return xff.split(',')[0].trim();
   }
-
-  return request.ip || request.connection.remoteAddress || 'unknown';
+  return 'unknown';
 }
 
-async function getImportantHeaders(req: express.Request) {
+async function getImportantHeaders(c: Context) {
   const headers: Record<string, string> = {
-    'x-origin-ip': getClientIp(req),
+    'x-origin-ip': getClientIp(c),
   };
-  const ua = normalizeHeaderValue(req.headers['user-agent']);
+  const ua = c.req.header('user-agent');
   if (ua) {
     headers['user-agent'] = ua;
   }
@@ -149,47 +141,33 @@ async function getImportantHeaders(req: express.Request) {
 
 // Middleware
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-function readSessionIdFromCookie(req: express.Request): string | undefined {
-  const cookieHeader = req.headers['cookie'];
-  if (!cookieHeader) return undefined;
-  const match = cookieHeader.match(/(?:^|; )session-id=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : undefined;
-}
-
-function requireSession(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction
-): void {
-  const headerValue = req.headers['x-session-id'];
-  const headerSessionId = Array.isArray(headerValue)
-    ? headerValue[0]
-    : headerValue;
-  const sessionId = headerSessionId || readSessionIdFromCookie(req);
+// Session middleware
+app.use('/api/*', async (c: Context<{ Variables: Variables }>, next: Next) => {
+  const headerSessionId = c.req.header('x-session-id');
+  let sessionId = headerSessionId;
   if (!sessionId) {
-    res.status(400).json({ error: 'session-id is required' });
-    return;
+    sessionId = getCookie(c, 'session-id');
   }
-  req.sessionID = sessionId;
+  if (!sessionId) {
+    return c.json({ error: 'session-id is required' }, 400);
+  }
+  c.set('sessionID', sessionId);
   Sentry.getIsolationScope().setTag('session_id', sessionId);
-  next();
-}
+  await next();
+});
 
-app.use('/api', requireSession);
-
-app.get('/internal/sentry/config', (_, res) => {
-  res.json({
+// Sentry config
+app.get('/internal/sentry/config', (c) => {
+  return c.json({
     dsn: settings.SENTRY_DSN,
     environment: settings.ENVIRONMENT,
   });
 });
 
 // Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get('/health', (c) => {
+  return c.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // API Routes
@@ -231,8 +209,8 @@ async function initiateDistill(
   return { html: match.distilled };
 }
 
-app.post('/api/get-book-list', async (req, res) => {
-  const sessionId = req.sessionID!;
+app.post('/api/get-book-list', async (c) => {
+  const sessionId = c.get('sessionID');
 
   const span = trace.getActiveSpan();
   span?.updateName('POST /api/get-book-list');
@@ -241,7 +219,7 @@ app.post('/api/get-book-list', async (req, res) => {
   let browser: Browser | undefined;
 
   try {
-    const headers = await getImportantHeaders(req);
+    const headers = await getImportantHeaders(c);
     const hostname = new URL(GOODREADS_REVIEW_LIST_URL).hostname;
 
     consola.start('Creating remote browser');
@@ -259,14 +237,14 @@ app.post('/api/get-book-list', async (req, res) => {
     const hostnameToUse = hostname;
     const { html } = await initiateDistill(hostnameToUse, page);
     if (!html) {
-      return res.status(500).send();
+      return c.body(null, 500);
     }
     const responseData = {
       browserId,
       pageId: targetId,
       html: formatDistilledPage(html, browserId, targetId),
     };
-    return res.json({
+    return c.json({
       success: true,
       data: responseData,
     });
@@ -274,7 +252,7 @@ app.post('/api/get-book-list', async (req, res) => {
     consola.error('get-book-list handler failed', error as Error, {
       sessionId,
     });
-    return res.status(500).send();
+    return c.body(null, 500);
   } finally {
     if (browser) {
       try {
@@ -310,10 +288,11 @@ function redirect(action: string): string {
     </html>`;
 }
 
-app.get('/api/dpage/:browserId/:pageId', (req, res) => {
-  const { browserId, pageId } = req.params;
+app.get('/api/dpage/:browserId/:pageId', (c) => {
+  const browserId = c.req.param('browserId');
+  const pageId = c.req.param('pageId');
   if (!browserId || !pageId) {
-    return res.status(503).send();
+    return c.body(null, 503);
   }
 
   const span = trace.getActiveSpan();
@@ -321,15 +300,22 @@ app.get('/api/dpage/:browserId/:pageId', (req, res) => {
   span?.setAttribute('pageturner.browser_id', browserId);
   span?.setAttribute('pageturner.page_id', pageId);
 
-  return res
-    .type('text/html')
-    .send(redirect(`/api/dpage/${browserId}/${pageId}`));
+  return c.html(redirect(`/api/dpage/${browserId}/${pageId}`));
 });
 
-app.post('/api/dpage/:browserId/:pageId', async (req, res) => {
-  const browserId = req.params.browserId;
-  const pageId = req.params.pageId;
-  const body = (req.body ?? {}) as Record<string, unknown>;
+app.post('/api/dpage/:browserId/:pageId', async (c) => {
+  const browserId = c.req.param('browserId');
+  const pageId = c.req.param('pageId');
+
+  // Parse body supporting both JSON (API clients) and URL-encoded (HTML forms)
+  const contentType = c.req.header('content-type') || '';
+  let body: Record<string, unknown> = {};
+  if (contentType.includes('application/json')) {
+    body = await c.req.json().catch(() => ({}));
+  } else {
+    body = await c.req.parseBody().catch(() => ({}));
+  }
+
   const fields: Record<string, string> = {};
 
   for (const [key, value] of Object.entries(body)) {
@@ -338,7 +324,7 @@ app.post('/api/dpage/:browserId/:pageId', async (req, res) => {
   }
 
   if (!browserId || !pageId) {
-    return res.status(503).send();
+    return c.body(null, 503);
   }
 
   const span = trace.getActiveSpan();
@@ -373,9 +359,9 @@ app.post('/api/dpage/:browserId/:pageId', async (req, res) => {
         if (iteration === 0) {
           const html = await page.content();
           if (html) {
-            return res
-              .type('text/html')
-              .send(formatDistilledPage(html, browserId, pageId));
+            return c.html(
+              formatDistilledPage(html, browserId, pageId)
+            );
           }
         }
         consola.warn('No matched pattern found');
@@ -399,7 +385,7 @@ app.post('/api/dpage/:browserId/:pageId', async (req, res) => {
         consola.success('Distillation completed. Data is available!', {
           json: converted,
         });
-        return res.type('text/html').send(SPINNER_HTML);
+        return c.html(SPINNER_HTML);
       }
 
       // Fill the submitted form fields into the page using the distilled inputs
@@ -468,19 +454,19 @@ app.post('/api/dpage/:browserId/:pageId', async (req, res) => {
           continue;
         }
         consola.warn('Not all form fields are filled');
-        return res
-          .type('text/html')
-          .send(formatDistilledPage(distilled, browserId, pageId));
+        return c.html(
+          formatDistilledPage(distilled, browserId, pageId)
+        );
       }
     }
 
-    return res.status(503).send();
+    return c.body(null, 503);
   } catch (error) {
     consola.error('dpage handler failed', error as Error, {
       browserId,
       pageId,
     });
-    return res.status(500).send();
+    return c.body(null, 500);
   } finally {
     if (browser) {
       try {
@@ -493,15 +479,16 @@ app.post('/api/dpage/:browserId/:pageId', async (req, res) => {
   }
 });
 
-app.post('/api/poll-browser', async (req, res) => {
+app.post('/api/poll-browser', async (c) => {
   try {
-    const { browser_id, page_id } = req.body;
+    const body = await c.req.json().catch(() => ({}));
+    const { browser_id, page_id } = body;
 
     if (!browser_id || !page_id) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         error: 'browser_id and page_id are required',
-      });
+      }, 400);
     }
 
     const span = trace.getActiveSpan();
@@ -514,7 +501,7 @@ app.post('/api/poll-browser', async (req, res) => {
     const bookListContent = stored ?? [];
     const status = bookListContent.length > 0 ? 'SUCCESS' : 'PENDING';
 
-    res.json({
+    return c.json({
       success: true,
       data: {
         status,
@@ -522,27 +509,26 @@ app.post('/api/poll-browser', async (req, res) => {
       },
     });
   } catch (error) {
-    consola.error('Poll browser error:', error as Error, {
-      req: req.toString(),
-    });
-    res.status(500).json({
+    consola.error('Poll browser error:', error as Error);
+    return c.json({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
-    });
+    }, 500);
   }
 });
 
-app.post('/api/finalize-browser', async (req, res) => {
+app.post('/api/finalize-browser', async (c) => {
   const span = trace.getActiveSpan();
   span?.updateName('POST /api/finalize-browser');
   try {
-    const { browser_id, page_id } = req.body;
+    const body = await c.req.json().catch(() => ({}));
+    const { browser_id, page_id } = body;
 
     if (!browser_id || !page_id) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         error: 'browser_id and page_id are required',
-      });
+      }, 400);
     }
 
     span?.setAttribute('pageturner.browser_id', browser_id);
@@ -550,38 +536,76 @@ app.post('/api/finalize-browser', async (req, res) => {
     distillationStore.delete(browser_id);
     consola.info('Browser finalized', { browser_id, page_id });
 
-    res.json({
+    return c.json({
       success: true,
     });
   } catch (error) {
-    consola.error('Finalize browser error:', error as Error, {
-      req: req.toString(),
-    });
-    res.status(500).json({
+    consola.error('Finalize browser error:', error as Error);
+    return c.json({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
-    });
+    }, 500);
   }
 });
 
-const createProxy = (path: string) =>
-  createProxyMiddleware({
-    target: `${settings.REMOTEBROWSER_URL}${path}`,
-    changeOrigin: true,
-    on: {
-      proxyReq: fixRequestBody,
-      error: (
-        err: Error,
-        req: express.Request,
-        res: express.Response | Socket
-      ) => {
-        consola.error('Proxy error:', err, { req: req.toString() });
-        if ('status' in res) {
-          res.status(500).send('Proxy error occurred');
+// Proxy handler for forwarding requests to the remote browser
+const createProxyHandler = () => {
+  return async (c: Context) => {
+    const targetUrl = `${settings.REMOTEBROWSER_URL}${c.req.path}`;
+
+    const headers = new Headers();
+    c.req.raw.headers.forEach((value, key) => {
+      const lower = key.toLowerCase();
+      if (
+        ['host', 'connection', 'transfer-encoding', 'keep-alive'].includes(
+          lower
+        )
+      ) {
+        return;
+      }
+      headers.set(key, value);
+    });
+    headers.set('host', new URL(targetUrl).host);
+
+    const init: RequestInit = {
+      method: c.req.method,
+      headers,
+      redirect: 'manual',
+    };
+
+    if (
+      c.req.method !== 'GET' &&
+      c.req.method !== 'HEAD' &&
+      c.req.raw.body
+    ) {
+      init.body = await c.req.raw.clone().arrayBuffer();
+    }
+
+    try {
+      const response = await fetch(targetUrl, init);
+
+      const resHeaders = new Headers();
+      response.headers.forEach((value, key) => {
+        const lower = key.toLowerCase();
+        if (
+          ['transfer-encoding', 'connection', 'keep-alive'].includes(lower)
+        ) {
+          return;
         }
-      },
-    },
-  });
+        resHeaders.set(key, value);
+      });
+
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: resHeaders,
+      });
+    } catch (err) {
+      consola.error('Proxy error:', err as Error, { url: targetUrl });
+      return c.json({ error: 'Proxy error occurred' }, 500);
+    }
+  };
+};
 
 const proxyPaths = [
   '/auth',
@@ -593,76 +617,55 @@ const proxyPaths = [
   '/__static',
 ];
 
-proxyPaths.forEach((path) => {
-  app.use(path, createProxy(path));
-});
-app.use('/api', async (req, res, next) => {
-  bodyParser.json()(req, res, async (err) => {
-    if (err) return next(err);
-
-    createProxy('/api')(req, res, next);
-  });
+// Register proxy routes (after local routes so they take precedence)
+proxyPaths.forEach((proxyPath) => {
+  app.all(proxyPath, createProxyHandler());
+  app.all(`${proxyPath}/*`, createProxyHandler());
 });
 
-// The error handler must be registered before any other error middleware and after all controllers
-Sentry.setupExpressErrorHandler(app);
+// API proxy catch-all (for API routes not handled locally)
+app.all('/api/*', createProxyHandler());
 
-app.use(
-  (
-    err: Error,
-    req: express.Request,
-    res: express.Response,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    next: express.NextFunction
-  ) => {
-    consola.error('Unhandled server error', err, {
-      component: 'server',
-      operation: 'fallback-error-handler',
-      url: req.url,
-      method: req.method,
-    });
-
-    if (!res.headersSent) {
-      res.status(500).json({
-        error: 'Internal Server Error',
-        message: err.message,
-        timestamp: new Date().toISOString(),
-      });
-    }
-  }
-);
+// Global error handler — Sentry captures exceptions with full Hono request context
+Sentry.setupHonoErrorHandler(app);
 
 // Serve static files only in production
 if (settings.NODE_ENV === 'production') {
-  // Serve static files from dist directory (after API routes)
-  app.use(express.static(path.join(__dirname, '..', 'dist')));
+  const distDir = path.join(__dirname, '..', 'dist');
 
-  // Catch-all handler: send back React app for any non-API, non-static routes
-  app.use((req, res, next) => {
-    // If it's an API route, let other handlers deal with it
-    if (req.path.startsWith('/api/') || req.path.startsWith('/health')) {
-      return next();
+  // Serve static assets (JS, CSS, images, etc.)
+  app.use('/static-assets/*', serveStatic({ root: distDir }));
+  app.use('/favicon.svg', serveStatic({ root: distDir }));
+  app.use('/favicon.ico', serveStatic({ root: distDir }));
+  app.use('/style.css', serveStatic({ root: distDir }));
+  app.use('/signin.js', serveStatic({ root: distDir }));
+
+  // SPA fallback: serve index.html for any non-API, non-static route
+  app.get('*', (c) => {
+    // Skip API and health routes (they're handled above)
+    if (c.req.path.startsWith('/api/') || c.req.path === '/health') {
+      return c.notFound();
     }
-    // For all other routes, serve the React app
-    res.sendFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    try {
+      const html = readFileSync(path.join(distDir, 'index.html'), 'utf-8');
+      return c.html(html);
+    } catch {
+      return c.notFound();
+    }
   });
 }
 
-async function startServer() {
-  try {
-    app.listen(PORT, () => {
-      consola.success(`Server running on port ${PORT}`);
-      if (settings.NODE_ENV === 'production') {
-        app.set('trust proxy', 1);
-        consola.info('Serving static files from dist/');
-      } else {
-        consola.info('API only mode - use Vite dev server for frontend');
-      }
-    });
-  } catch (error) {
-    consola.error('Failed to start server:', error as Error);
-    process.exit(1);
+serve(
+  {
+    fetch: app.fetch,
+    port: Number(PORT),
+  },
+  (info) => {
+    consola.success(`Server running on port ${info.port}`);
+    if (settings.NODE_ENV === 'production') {
+      consola.info('Serving static files from dist/');
+    } else {
+      consola.info('API only mode - use Vite dev server for frontend');
+    }
   }
-}
-
-startServer();
+);

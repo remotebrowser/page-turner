@@ -6,7 +6,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-# Runtime stage - use Node.js to run the Express server
+# Runtime stage - use Node.js to run the Hono server
 FROM node:22-alpine AS runtime
 WORKDIR /app
 
@@ -37,5 +37,5 @@ RUN chmod +x /app/start.sh
 # Expose the application port
 EXPOSE 3001
 
-# Start the Express server
+# Start the Hono server
 CMD ["/app/start.sh"] 
