@@ -37,36 +37,28 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
 
     const isStale = () => activeKeyRef.current !== key;
 
-    const onPollBrowser = async () => {
-      try {
-        callbacksRef.current.onProgressStep?.(2);
-        let pollResult;
-        while (true) {
-          if (isStale()) {
-            return;
-          }
-          try {
-            pollResult = await apiClient.pollBrowser(browserId, pageId);
-            if (pollResult?.status === 'SUCCESS') {
-              break;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 3000));
-          } catch (error) {
-            if (isStale()) return;
-            Sentry.captureException(error, { tags: SENTRY_TAGS });
-          }
-        }
+    const onDistilled = (event: MessageEvent) => {
+      const payload = event.data as {
+        type?: string;
+        browserId?: string;
+        pageId?: string;
+        data?: unknown;
+      };
+      if (!payload || typeof payload !== 'object') return;
+      if (payload.type !== 'pageturner:distilled') return;
+      if (payload.browserId !== browserId || payload.pageId !== pageId) return;
+      if (isStale()) return;
 
-        if (isStale()) return;
+      try {
         const transformedData = transformData(
-          pollResult,
+          payload.data,
           BRAND_CONFIG.dataTransform
         );
         callbacksRef.current.onAuthComplete?.();
         callbacksRef.current.onSuccessConnect(
           transformedData as unknown as Book[]
         );
-        apiClient.finalizeBrowser(browserId, pageId);
+        void apiClient.finalizeBrowser(browserId, pageId);
       } catch (error) {
         if (isStale()) return;
         Sentry.captureException(error, {
@@ -79,12 +71,14 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
       }
     };
 
+    window.addEventListener('message', onDistilled);
     if (startedBrowserPageRef.current !== key) {
       startedBrowserPageRef.current = key;
-      void onPollBrowser();
+      callbacksRef.current.onProgressStep?.(2);
     }
 
     return () => {
+      window.removeEventListener('message', onDistilled);
       if (activeKeyRef.current === key) {
         activeKeyRef.current = null;
       }

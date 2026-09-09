@@ -65,22 +65,6 @@ consola.info(`Loaded ${patterns.length} distillation patterns`);
 const app = new Hono<{ Variables: Variables }>();
 const PORT = process.env.PORT || 3001;
 
-const SPINNER_HTML = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Loading</title>
-    <link rel="stylesheet" href="/style.css" />
-  </head>
-  <body>
-    <div>
-      <span class="spinner" aria-label="Loading" style="border-top-color: #333"></span>
-      <span>Loading...</span>
-    </div>
-  </body>
-</html>`;
-
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -118,6 +102,47 @@ function formatDistilledPage(
   body.appendChild(card);
 
   return `<!doctype html>${document.documentElement.outerHTML}`;
+}
+
+// Builds the "distilled JSON" response. Distillation is complete, so instead of
+// rendering another form in the iframe we embed the result as a JSON payload and
+// hand it back to the parent window via postMessage. This keeps the result out of
+// server-side in-memory state.
+function formatDistilledResult(
+  data: Record<string, string>[],
+  browserId: string,
+  pageId: string
+): string {
+  const message = JSON.stringify({
+    type: 'pageturner:distilled',
+    browserId,
+    pageId,
+    data: { [goodreadsConfig.dataTransform.dataPath]: data },
+  }).replace(/</g, '\\u003c');
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Connected</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div>
+      <span>Connected</span>
+    </div>
+    <script type="application/json" id="pageturner-data">${message}</script>
+    <script>
+      (function () {
+        var data = JSON.parse(
+          document.getElementById('pageturner-data').textContent
+        );
+        window.parent.postMessage(data, '*');
+      })();
+    </script>
+  </body>
+</html>`;
 }
 
 function getClientIp(c: Context): string {
@@ -173,8 +198,6 @@ app.get('/health', (c) => {
 // API Routes
 
 const GOODREADS_REVIEW_LIST_URL = 'https://www.goodreads.com/review/list';
-
-const distillationStore = new Map<string, Record<string, string>[]>();
 
 async function initiateDistill(
   hostname: string,
@@ -380,12 +403,10 @@ app.post('/api/dpage/:browserId/:pageId', async (c) => {
       // If the distilled content terminates, convert it to the final result
       const converted = await convert(distilled, patternsDir);
       if (converted.length > 0) {
-        // Store the result so poll-browser can pick it up
-        distillationStore.set(browserId, converted);
         consola.success('Distillation completed. Data is available!', {
           json: converted,
         });
-        return c.html(SPINNER_HTML);
+        return c.html(formatDistilledResult(converted, browserId, pageId));
       }
 
       // Fill the submitted form fields into the page using the distilled inputs
@@ -479,44 +500,6 @@ app.post('/api/dpage/:browserId/:pageId', async (c) => {
   }
 });
 
-app.post('/api/poll-browser', async (c) => {
-  try {
-    const body = await c.req.json().catch(() => ({}));
-    const { browser_id, page_id } = body;
-
-    if (!browser_id || !page_id) {
-      return c.json({
-        success: false,
-        error: 'browser_id and page_id are required',
-      }, 400);
-    }
-
-    const span = trace.getActiveSpan();
-    span?.updateName('POST /api/poll-browser');
-    span?.setAttribute('pageturner.browser_id', browser_id);
-    span?.setAttribute('pageturner.page_id', page_id);
-
-    // Check the in-memory store for distillation results
-    const stored = distillationStore.get(browser_id);
-    const bookListContent = stored ?? [];
-    const status = bookListContent.length > 0 ? 'SUCCESS' : 'PENDING';
-
-    return c.json({
-      success: true,
-      data: {
-        status,
-        [goodreadsConfig.dataTransform.dataPath]: bookListContent,
-      },
-    });
-  } catch (error) {
-    consola.error('Poll browser error:', error as Error);
-    return c.json({
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    }, 500);
-  }
-});
-
 app.post('/api/finalize-browser', async (c) => {
   const span = trace.getActiveSpan();
   span?.updateName('POST /api/finalize-browser');
@@ -533,7 +516,6 @@ app.post('/api/finalize-browser', async (c) => {
 
     span?.setAttribute('pageturner.browser_id', browser_id);
     await destroyRemoteBrowser(browser_id);
-    distillationStore.delete(browser_id);
     consola.info('Browser finalized', { browser_id, page_id });
 
     return c.json({

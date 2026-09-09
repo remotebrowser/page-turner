@@ -13,11 +13,6 @@ export type GetBookListResponse = {
   pageId?: string;
 };
 
-type PollAuthResponse = {
-  status?: string;
-  data?: unknown;
-};
-
 export class ApiClient {
   private baseUrl: string;
 
@@ -56,16 +51,6 @@ export class ApiClient {
     return this.request<GetBookListResponse>('/get-book-list', {
       method: 'POST',
       body: JSON.stringify({ keywords }),
-    });
-  }
-
-  async pollBrowser(
-    browserId: string,
-    pageId: string
-  ): Promise<PollAuthResponse> {
-    return this.request<PollAuthResponse>('/poll-browser', {
-      method: 'POST',
-      body: JSON.stringify({ browser_id: browserId, page_id: pageId }),
     });
   }
 
