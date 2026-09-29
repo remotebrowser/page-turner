@@ -7,7 +7,7 @@ if [ -n "${TAILSCALE_AUTHKEY}" ]; then
   /app/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock &
 
   echo "Authenticating with Tailscale..."
-  /app/tailscale up --authkey="${TAILSCALE_AUTHKEY}" --hostname=page-turner &
+  /app/tailscale up --authkey="${TAILSCALE_AUTHKEY}" --hostname=page-turner --advertise-tags=tag:fly &
 else
   echo "Skipping Tailscale setup (no TAILSCALE_AUTHKEY provided)"
 fi

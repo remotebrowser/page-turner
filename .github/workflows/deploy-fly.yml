@@ -12,13 +12,8 @@ on:
         required: false
         type: boolean
         default: true
-      lambda:
-        description: Deploy page-turner-lambda
-        required: false
-        type: boolean
-        default: true
-      daytona:
-        description: Deploy page-turner-daytona
+      gateway:
+        description: Deploy page-turner-gateway
         required: false
         type: boolean
         default: true
@@ -34,12 +29,10 @@ jobs:
         with:
           entries: |
             { "env": "demo",    "config": "demo",    "app_name": "page-turner",         "fly_toml": "fly.toml"        }
-            { "env": "lambda",  "config": "lambda",  "app_name": "page-turner-lambda",  "fly_toml": "fly.lambda.toml" }
-            { "env": "daytona", "config": "daytona", "app_name": "page-turner-daytona", "fly_toml": "fly.toml" }
+            { "env": "gateway", "config": "lambda_gateway", "app_name": "page-turner-gateway", "fly_toml": "fly.lambda.toml" }
           selections: |
             ${{ inputs.demo    && 'demo'    || '' }}
-            ${{ inputs.lambda  && 'lambda'  || '' }}
-            ${{ inputs.daytona && 'daytona' || '' }}
+            ${{ inputs.gateway && 'gateway' || '' }}
           key-field: env
 
   deploy:
