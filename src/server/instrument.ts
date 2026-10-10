@@ -20,6 +20,11 @@ if (settings.LOGFIRE_TOKEN) {
       '@opentelemetry/instrumentation-net': {
         enabled: false,
       },
+      // Playwright looks up both IPv4 and IPv6. Our hosts have only one of them,
+      // so one lookup always fails with ENOTFOUND. This is harmless noise.
+      '@opentelemetry/instrumentation-dns': {
+        enabled: false,
+      },
     },
   });
 } else {
