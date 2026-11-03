@@ -58,6 +58,8 @@ export class ApiClient {
     return this.request<void>('/finalize-browser', {
       method: 'POST',
       body: JSON.stringify({ browser_id: browserId, page_id: pageId }),
+      // Lets the request finish when it is sent while the page is unloading.
+      keepalive: true,
     });
   }
 }

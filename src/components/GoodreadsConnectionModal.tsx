@@ -27,6 +27,11 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
   callbacksRef.current = props;
   const activeKeyRef = useRef<string | null>(null);
   const startedBrowserPageRef = useRef<string | null>(null);
+  const finalizedKeyRef = useRef<string | null>(null);
+  const pendingFinalizeRef = useRef<{
+    key: string;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
 
   useEffect(() => {
     const browserId = bookListData.browserId;
@@ -36,6 +41,23 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
     activeKeyRef.current = key;
 
     const isStale = () => activeKeyRef.current !== key;
+
+    // The remote browser keeps running until it is terminated, so terminate
+    // it once, whichever way the connection ends.
+    const finalize = () => {
+      if (finalizedKeyRef.current === key) return;
+      finalizedKeyRef.current = key;
+      apiClient.finalizeBrowser(browserId, pageId).catch((error) => {
+        Sentry.captureException(error, { tags: SENTRY_TAGS });
+      });
+    };
+
+    // StrictMode unmounts and remounts in development; keep the browser if
+    // the same one comes straight back.
+    if (pendingFinalizeRef.current?.key === key) {
+      clearTimeout(pendingFinalizeRef.current.timer);
+      pendingFinalizeRef.current = null;
+    }
 
     const onDistilled = (event: MessageEvent) => {
       const payload = event.data as {
@@ -58,8 +80,9 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
         callbacksRef.current.onSuccessConnect(
           transformedData as unknown as Book[]
         );
-        void apiClient.finalizeBrowser(browserId, pageId);
+        finalize();
       } catch (error) {
+        finalize();
         if (isStale()) return;
         Sentry.captureException(error, {
           tags: SENTRY_TAGS,
@@ -72,6 +95,7 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
     };
 
     window.addEventListener('message', onDistilled);
+    window.addEventListener('pagehide', finalize);
     if (startedBrowserPageRef.current !== key) {
       startedBrowserPageRef.current = key;
       callbacksRef.current.onProgressStep?.(2);
@@ -79,9 +103,17 @@ export function GoodreadsConnectionModal(props: GoodreadsConnectionModalProps) {
 
     return () => {
       window.removeEventListener('message', onDistilled);
+      window.removeEventListener('pagehide', finalize);
       if (activeKeyRef.current === key) {
         activeKeyRef.current = null;
       }
+      pendingFinalizeRef.current = {
+        key,
+        timer: setTimeout(() => {
+          pendingFinalizeRef.current = null;
+          finalize();
+        }, 0),
+      };
     };
   }, [bookListData.browserId, bookListData.pageId]);
 

@@ -240,6 +240,7 @@ app.post('/api/get-book-list', async (c) => {
 
   let browserId: string | undefined;
   let browser: Browser | undefined;
+  let handedOff = false;
 
   try {
     const headers = await getImportantHeaders(c);
@@ -267,6 +268,8 @@ app.post('/api/get-book-list', async (c) => {
       pageId: targetId,
       html: formatDistilledPage(html, browserId, targetId),
     };
+    // From here the client owns the browser and terminates it when done.
+    handedOff = true;
     return c.json({
       success: true,
       data: responseData,
@@ -283,6 +286,16 @@ app.post('/api/get-book-list', async (c) => {
         consola.info('Playwright browser disconnected', { browserId });
       } catch (e) {
         consola.error('Error closing Playwright browser:', e as Error);
+      }
+    }
+    // The client never learns the ID of a browser from a failed request, so
+    // terminate it here or it keeps running.
+    if (browserId && !handedOff) {
+      try {
+        await destroyRemoteBrowser(browserId);
+        consola.info('Remote browser terminated after failure', { browserId });
+      } catch (e) {
+        consola.error('Error terminating remote browser:', e as Error);
       }
     }
   }
