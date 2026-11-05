@@ -8,6 +8,7 @@ const NAV_RETRY_INTERVAL_MS = 1000;
 
 const READY_TIMEOUT_MS = 45_000;
 const READY_POLL_INTERVAL_MS = 500;
+const READY_POLL_TIMEOUT_MS = 10_000;
 const STARTING_STATUSES = new Set(['launched', 'starting']);
 
 const sleep = (ms: number): Promise<void> =>
@@ -22,14 +23,11 @@ export async function createRemoteBrowser(
   headers?: Record<string, string>
 ): Promise<string> {
   const url = `${settings.REMOTEBROWSER_URL}/api/v1/browsers`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...headers,
-      ...authHeaders(),
-    },
-  });
+  const merged = new Headers({ 'Content-Type': 'application/json' });
+  for (const [key, value] of Object.entries({ ...headers, ...authHeaders() })) {
+    merged.set(key, value);
+  }
+  const response = await fetch(url, { method: 'POST', headers: merged });
   if (!response.ok) {
     throw new Error(
       `Failed to create remote browser: ${response.status} ${response.statusText}`
@@ -40,7 +38,12 @@ export async function createRemoteBrowser(
     status?: string;
   };
   if (STARTING_STATUSES.has(status?.toLowerCase() ?? '')) {
-    await waitForBrowserReady(browser_id);
+    try {
+      await waitForBrowserReady(browser_id);
+    } catch (err) {
+      await destroyRemoteBrowser(browser_id).catch(() => undefined);
+      throw err;
+    }
   }
   return browser_id;
 }
@@ -49,7 +52,10 @@ async function waitForBrowserReady(browserId: string): Promise<void> {
   const url = `${settings.REMOTEBROWSER_URL}/api/v1/browsers/${browserId}`;
   const deadline = Date.now() + READY_TIMEOUT_MS;
   while (true) {
-    const response = await fetch(url, { headers: authHeaders() });
+    const response = await fetch(url, {
+      headers: authHeaders(),
+      signal: AbortSignal.timeout(READY_POLL_TIMEOUT_MS),
+    });
     if (!response.ok) {
       throw new Error(
         `Failed to get remote browser status: ${response.status} ${response.statusText}`
