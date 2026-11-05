@@ -33,6 +33,7 @@ Create a `.env` file in the project root with the following variables:
 
 ```env
 REMOTEBROWSER_URL=http://localhost:23456
+REMOTEBROWSER_API_KEY=
 
 # Sentry Configuration (optional)
 SENTRY_DSN=https://your-dsn@sentry.io/project-id
