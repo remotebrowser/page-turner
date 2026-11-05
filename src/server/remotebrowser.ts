@@ -6,6 +6,10 @@ import { settings } from './config.js';
 const NAV_RETRY_ATTEMPTS = 30;
 const NAV_RETRY_INTERVAL_MS = 1000;
 
+const READY_TIMEOUT_MS = 45_000;
+const READY_POLL_INTERVAL_MS = 500;
+const STARTING_STATUSES = new Set(['launched', 'starting']);
+
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -31,8 +35,46 @@ export async function createRemoteBrowser(
       `Failed to create remote browser: ${response.status} ${response.statusText}`
     );
   }
-  const { browser_id } = (await response.json()) as { browser_id: string };
+  const { browser_id, status } = (await response.json()) as {
+    browser_id: string;
+    status?: string;
+  };
+  if (STARTING_STATUSES.has(status?.toLowerCase() ?? '')) {
+    await waitForBrowserReady(browser_id);
+  }
   return browser_id;
+}
+
+async function waitForBrowserReady(browserId: string): Promise<void> {
+  const url = `${settings.REMOTEBROWSER_URL}/api/v1/browsers/${browserId}`;
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  while (true) {
+    const response = await fetch(url, { headers: authHeaders() });
+    if (!response.ok) {
+      throw new Error(
+        `Failed to get remote browser status: ${response.status} ${response.statusText}`
+      );
+    }
+    const { status, description } = (await response.json()) as {
+      status?: string;
+      description?: string;
+    };
+    const normalized = status?.toLowerCase() ?? '';
+    if (!normalized || normalized === 'running') {
+      return;
+    }
+    if (!STARTING_STATUSES.has(normalized)) {
+      throw new Error(
+        `Remote browser ${browserId} is ${normalized}${description ? `: ${description}` : ''}`
+      );
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Remote browser ${browserId} not ready after ${READY_TIMEOUT_MS / 1000}s`
+      );
+    }
+    await sleep(READY_POLL_INTERVAL_MS);
+  }
 }
 
 export async function destroyRemoteBrowser(browserId: string): Promise<void> {
