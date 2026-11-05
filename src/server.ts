@@ -17,6 +17,7 @@ import { BrandConfig } from './modules/Config';
 import { settings } from './server/config.js';
 import { trace } from '@opentelemetry/api';
 import {
+  authHeaders,
   createRemoteBrowser,
   destroyRemoteBrowser,
   getPage,
@@ -548,6 +549,9 @@ const createProxyHandler = () => {
       headers.set(key, value);
     });
     headers.set('host', new URL(targetUrl).host);
+    for (const [key, value] of Object.entries(authHeaders())) {
+      headers.set(key, value);
+    }
 
     const init: RequestInit = {
       method: c.req.method,

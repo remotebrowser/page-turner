@@ -9,13 +9,22 @@ const NAV_RETRY_INTERVAL_MS = 1000;
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+export const authHeaders = (): Record<string, string> =>
+  settings.REMOTEBROWSER_API_KEY
+    ? { Authorization: `Bearer ${settings.REMOTEBROWSER_API_KEY}` }
+    : {};
+
 export async function createRemoteBrowser(
   headers?: Record<string, string>
 ): Promise<string> {
   const url = `${settings.REMOTEBROWSER_URL}/api/v1/browsers`;
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
+    headers: {
+      'Content-Type': 'application/json',
+      ...headers,
+      ...authHeaders(),
+    },
   });
   if (!response.ok) {
     throw new Error(
@@ -28,7 +37,7 @@ export async function createRemoteBrowser(
 
 export async function destroyRemoteBrowser(browserId: string): Promise<void> {
   const url = `${settings.REMOTEBROWSER_URL}/api/v1/browsers/${browserId}`;
-  await fetch(url, { method: 'DELETE' });
+  await fetch(url, { method: 'DELETE', headers: authHeaders() });
 }
 
 export const getCdpUrl = (browserId: string): string => {
@@ -43,7 +52,9 @@ export const getCdpUrl = (browserId: string): string => {
 export const connectRemoteBrowser = async (
   browserId: string
 ): Promise<Browser> => {
-  return await chromium.connectOverCDP(getCdpUrl(browserId));
+  return await chromium.connectOverCDP(getCdpUrl(browserId), {
+    headers: authHeaders(),
+  });
 };
 
 export const getPage = async (
