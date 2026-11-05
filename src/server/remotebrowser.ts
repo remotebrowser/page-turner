@@ -14,6 +14,9 @@ const STARTING_STATUSES = new Set(['launched', 'starting']);
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+const normalizeStatus = (status?: string): string =>
+  status?.toLowerCase() ?? '';
+
 export const authHeaders = (): Record<string, string> =>
   settings.REMOTEBROWSER_API_KEY
     ? { Authorization: `Bearer ${settings.REMOTEBROWSER_API_KEY}` }
@@ -37,7 +40,7 @@ export async function createRemoteBrowser(
     browser_id: string;
     status?: string;
   };
-  if (STARTING_STATUSES.has(status?.toLowerCase() ?? '')) {
+  if (STARTING_STATUSES.has(normalizeStatus(status))) {
     try {
       await waitForBrowserReady(browser_id);
     } catch (err) {
@@ -51,7 +54,7 @@ export async function createRemoteBrowser(
 async function waitForBrowserReady(browserId: string): Promise<void> {
   const url = `${settings.REMOTEBROWSER_URL}/api/v1/browsers/${browserId}`;
   const deadline = Date.now() + READY_TIMEOUT_MS;
-  while (true) {
+  while (Date.now() < deadline) {
     const response = await fetch(url, {
       headers: authHeaders(),
       signal: AbortSignal.timeout(READY_POLL_TIMEOUT_MS),
@@ -65,7 +68,7 @@ async function waitForBrowserReady(browserId: string): Promise<void> {
       status?: string;
       description?: string;
     };
-    const normalized = status?.toLowerCase() ?? '';
+    const normalized = normalizeStatus(status);
     if (!normalized || normalized === 'running') {
       return;
     }
@@ -74,13 +77,11 @@ async function waitForBrowserReady(browserId: string): Promise<void> {
         `Remote browser ${browserId} is ${normalized}${description ? `: ${description}` : ''}`
       );
     }
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `Remote browser ${browserId} not ready after ${READY_TIMEOUT_MS / 1000}s`
-      );
-    }
     await sleep(READY_POLL_INTERVAL_MS);
   }
+  throw new Error(
+    `Remote browser ${browserId} not ready after ${READY_TIMEOUT_MS / 1000}s`
+  );
 }
 
 export async function destroyRemoteBrowser(browserId: string): Promise<void> {
