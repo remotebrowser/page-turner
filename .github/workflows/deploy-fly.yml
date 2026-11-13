@@ -59,6 +59,6 @@ jobs:
             REMOTEBROWSER_URL=op://page-turner/${{ matrix.config }}/REMOTEBROWSER_URL
             REMOTEBROWSER_API_KEY=op://page-turner/${{ matrix.config }}/REMOTEBROWSER_API_KEY
             SENTRY_DSN=op://page-turner/${{ matrix.config }}/SENTRY_DSN
-            ${{ matrix.config == 'lambda_gateway' && 'TAILSCALE_AUTHKEY=op://page-turner/lambda_gateway/TAILSCALE_AUTHKEY' || '' }}
+            TAILSCALE_AUTHKEY=op://page-turner/${{ matrix.config }}/TAILSCALE_AUTHKEY
           app-name: ${{ matrix.app_name }}
           fly-toml: ${{ matrix.fly_toml }}
