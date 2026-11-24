@@ -1,5 +1,6 @@
 import { chromium } from 'playwright';
 import { consola } from 'consola';
+import { RemoteBrowser } from '@remotebrowser/sdk';
 import type { Browser, Page } from 'playwright';
 import { settings } from './config.js';
 
@@ -9,6 +10,7 @@ const NAV_RETRY_INTERVAL_MS = 1000;
 const READY_TIMEOUT_MS = 45_000;
 const READY_POLL_INTERVAL_MS = 500;
 const READY_POLL_TIMEOUT_MS = 10_000;
+const DELETE_TIMEOUT_MS = 10_000;
 const STARTING_STATUSES = new Set(['launched', 'starting']);
 
 const sleep = (ms: number): Promise<void> =>
@@ -17,29 +19,30 @@ const sleep = (ms: number): Promise<void> =>
 const normalizeStatus = (status?: string): string =>
   status?.toLowerCase() ?? '';
 
+const remoteBrowser = new RemoteBrowser({
+  apiKey: settings.REMOTEBROWSER_API_KEY || 'unset',
+  baseURL: settings.REMOTEBROWSER_URL,
+  fetch: (input, init) => {
+    if (settings.REMOTEBROWSER_API_KEY) {
+      return fetch(input, init);
+    }
+    const headers = new Headers(init?.headers);
+    headers.delete('Authorization');
+    return fetch(input, { ...init, headers });
+  },
+});
+
 export const authHeaders = (): Record<string, string> =>
-  settings.REMOTEBROWSER_API_KEY
-    ? { Authorization: `Bearer ${settings.REMOTEBROWSER_API_KEY}` }
-    : {};
+  settings.REMOTEBROWSER_API_KEY ? remoteBrowser.authHeaders : {};
 
 export async function createRemoteBrowser(
   headers?: Record<string, string>
 ): Promise<string> {
-  const url = `${settings.REMOTEBROWSER_URL}/api/v1/browsers`;
-  const merged = new Headers({ 'Content-Type': 'application/json' });
-  for (const [key, value] of Object.entries({ ...headers, ...authHeaders() })) {
-    merged.set(key, value);
-  }
-  const response = await fetch(url, { method: 'POST', headers: merged });
-  if (!response.ok) {
-    throw new Error(
-      `Failed to create remote browser: ${response.status} ${response.statusText}`
-    );
-  }
-  const { browser_id, status } = (await response.json()) as {
-    browser_id: string;
-    status?: string;
-  };
+  // No retries: a retry after a lost response would leak a running browser.
+  const { browser_id, status } = await remoteBrowser.browsers.create(
+    {},
+    { headers, maxRetries: 0 }
+  );
   if (STARTING_STATUSES.has(normalizeStatus(status))) {
     try {
       await waitForBrowserReady(browser_id);
@@ -52,22 +55,12 @@ export async function createRemoteBrowser(
 }
 
 async function waitForBrowserReady(browserId: string): Promise<void> {
-  const url = `${settings.REMOTEBROWSER_URL}/api/v1/browsers/${browserId}`;
   const deadline = Date.now() + READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const response = await fetch(url, {
-      headers: authHeaders(),
-      signal: AbortSignal.timeout(READY_POLL_TIMEOUT_MS),
-    });
-    if (!response.ok) {
-      throw new Error(
-        `Failed to get remote browser status: ${response.status} ${response.statusText}`
-      );
-    }
-    const { status, description } = (await response.json()) as {
-      status?: string;
-      description?: string;
-    };
+    const { status, description } = await remoteBrowser.browsers.retrieve(
+      browserId,
+      { timeout: READY_POLL_TIMEOUT_MS }
+    );
     const normalized = normalizeStatus(status);
     if (!normalized || normalized === 'running') {
       return;
@@ -85,25 +78,24 @@ async function waitForBrowserReady(browserId: string): Promise<void> {
 }
 
 export async function destroyRemoteBrowser(browserId: string): Promise<void> {
-  const url = `${settings.REMOTEBROWSER_URL}/api/v1/browsers/${browserId}`;
-  await fetch(url, { method: 'DELETE', headers: authHeaders() });
+  try {
+    await remoteBrowser.browsers.delete(browserId, {
+      timeout: DELETE_TIMEOUT_MS,
+    });
+  } catch (err) {
+    if (!(err instanceof RemoteBrowser.NotFoundError)) {
+      throw err;
+    }
+  }
 }
-
-export const getCdpUrl = (browserId: string): string => {
-  const baseUrl = settings.REMOTEBROWSER_URL.replace(/\/+$/, '');
-  const protocol = baseUrl.startsWith('https') ? 'wss' : 'ws';
-  return (
-    baseUrl.replace(/^https?:\/\//, `${protocol}://`) +
-    `/api/v1/browsers/${browserId}/cdp`
-  );
-};
 
 export const connectRemoteBrowser = async (
   browserId: string
 ): Promise<Browser> => {
-  return await chromium.connectOverCDP(getCdpUrl(browserId), {
-    headers: authHeaders(),
-  });
+  return await chromium.connectOverCDP(
+    remoteBrowser.browsers.connectUrl(browserId),
+    { headers: authHeaders() }
+  );
 };
 
 export const getPage = async (
